@@ -43,7 +43,8 @@ type InvocationRequest record {
     string message;
     # Optional ID of the employee asking, so the agent doesn't need to ask for it
     string employeeId?;
-    # Optional conversation ID; falls back to the Foundry session ID
+    # Optional conversation ID for local testing. Ignored in Foundry, where the platform session ID is used;
+    # to continue a conversation there, send the same `agent_session_id` query parameter on every call
     string sessionId?;
 };
 
