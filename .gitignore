@@ -1,0 +1,13 @@
+# Secrets — never commit
+.env
+agent.json
+Config.toml
+
+# Build output
+target/
+hr_agent/target/
+
+.DS_Store
+
+# Local Claude Code instructions
+CLAUDE.md
