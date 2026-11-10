@@ -1,16 +1,12 @@
 import ballerina/ai;
+import ballerina/log;
 import ballerina/os;
 import ballerinax/ai.azure;
 
 // Required on legacy (non-/v1) endpoints; ignored on /v1 endpoints.
 const DEFAULT_API_VERSION = "2024-10-21";
 
-final azure:OpenAiModelProvider model = check new (
-    check requiredEnv("AZURE_OPENAI_ENDPOINT"),
-    check requiredEnv("AZURE_OPENAI_KEY"),
-    check requiredEnv("MODEL_DEPLOYMENT_NAME"),
-    apiVersion = os:getEnv("AZURE_OPENAI_API_VERSION") == "" ? DEFAULT_API_VERSION : os:getEnv("AZURE_OPENAI_API_VERSION")
-);
+final azure:OpenAiModelProvider model = check createModel();
 
 final ai:Agent hrAgent = check new (
     systemPrompt = {
@@ -29,6 +25,23 @@ final ai:Agent hrAgent = check new (
     tools = [getEmployeeProfile, getLeaveBalance, applyForLeave, listLeaveRequests, getCompanyHolidays,
         searchHrPolicies]
 );
+
+// Foundry's sandbox sends outbound HTTPS through a TLS-inspecting egress proxy and points SSL_CERT_FILE at
+// a CA bundle that includes the proxy's CA. Java doesn't read SSL_CERT_FILE, so hand the bundle to the
+// client explicitly; without it the TLS handshake to the model fails.
+isolated function createModel() returns azure:OpenAiModelProvider|error {
+    string endpoint = check requiredEnv("AZURE_OPENAI_ENDPOINT");
+    string apiKey = check requiredEnv("AZURE_OPENAI_KEY");
+    string deployment = check requiredEnv("MODEL_DEPLOYMENT_NAME");
+    string apiVersion = os:getEnv("AZURE_OPENAI_API_VERSION") == "" ? DEFAULT_API_VERSION : os:getEnv("AZURE_OPENAI_API_VERSION");
+
+    string caBundle = os:getEnv("SSL_CERT_FILE");
+    if caBundle == "" {
+        return new (endpoint, apiKey, deployment, apiVersion);
+    }
+    log:printInfo("Trusting CA bundle from SSL_CERT_FILE", path = caBundle);
+    return new (endpoint, apiKey, deployment, apiVersion, secureSocket = {cert: caBundle});
+}
 
 isolated function requiredEnv(string name) returns string|error {
     string value = os:getEnv(name);
