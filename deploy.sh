@@ -106,9 +106,11 @@ done
 cat <<EOF
 
 Deployed ${IMAGE} as ${AGENT} version ${VERSION}.
-Try it:
+Try it (Foundry issues session IDs: omit agent_session_id on the first call, then reuse the
+x-agent-session-id response header on later calls to keep the conversation):
   TOKEN=\$(az account get-access-token --resource https://ai.azure.com --query accessToken -o tsv)
-  curl -s -X POST "${BASE_URL}/agents/${AGENT}/endpoint/protocols/invocations?api-version=${API_VERSION}&agent_session_id=demo-1" \\
+  curl -s -D - -X POST "${BASE_URL}/agents/${AGENT}/endpoint/protocols/invocations?api-version=${API_VERSION}" \\
     -H "Authorization: Bearer \$TOKEN" -H "Content-Type: application/json" \\
     -d '{"message":"How much leave do I have left?","employeeId":"E1001"}'
+  # follow-ups: add &agent_session_id=<x-agent-session-id from the first response> to the URL
 EOF
