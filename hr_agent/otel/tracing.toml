@@ -1,0 +1,11 @@
+# Ballerina tracing config, used only inside the container (BAL_CONFIG_FILES points here).
+# Exports spans over OTLP to the collector that start.sh runs next to the agent.
+[ballerina.observe]
+tracingEnabled = true
+tracingProvider = "otel"
+
+[ballerina.otel]
+tracesEndpoint = "http://localhost:4317"
+
+[ballerina.otel.tracesResourceAttributes]
+"service.name" = "bal-demo-agent"

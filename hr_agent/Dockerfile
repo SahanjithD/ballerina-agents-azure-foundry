@@ -14,10 +14,10 @@ FROM eclipse-temurin:25-jre
 WORKDIR /app
 COPY --from=otelcol /build/otelcol /app/otelcol
 COPY otel/collector.yaml /app/collector.yaml
-COPY otel/Config.toml /app/Config.toml
+COPY otel/tracing.toml /app/tracing.toml
 COPY start.sh /app/start.sh
 COPY target/bin/hr_agent.jar /app/hr_agent.jar
 
-ENV BAL_CONFIG_FILES=/app/Config.toml
+ENV BAL_CONFIG_FILES=/app/tracing.toml
 EXPOSE 8088
 ENTRYPOINT ["/app/start.sh"]
