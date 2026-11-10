@@ -88,7 +88,8 @@ isolated function resolveSessionId(string? querySessionId, string? bodySessionId
     return "default";
 }
 
-// Logs which session identifiers reach the container, to check what Foundry actually forwards.
+// Logs which session identifiers reach the container, to check what Foundry actually forwards, and
+// whether W3C trace context arrives so container spans can join the platform's invoke_agent trace.
 // Logs header names only, not values, because some platform headers identify the caller.
 isolated function logSessionContext(string sessionId, string? querySessionId, http:Headers headers) {
     string[] agentHeaders = from string name in headers.getHeaderNames()
@@ -96,7 +97,8 @@ isolated function logSessionContext(string sessionId, string? querySessionId, ht
         select name;
     log:printInfo("Invocation received", sessionId = sessionId,
             platformSessionId = os:getEnv("FOUNDRY_AGENT_SESSION_ID"),
-            querySessionId = querySessionId ?: "", agentHeaders = agentHeaders);
+            querySessionId = querySessionId ?: "", agentHeaders = agentHeaders,
+            traceparent = headers.hasHeader("traceparent"), tracestate = headers.hasHeader("tracestate"));
 }
 
 // Logs environment variable names (never values) at startup, to see what the Foundry sandbox provides,
