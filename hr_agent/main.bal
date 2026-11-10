@@ -13,8 +13,12 @@ service / on new http:Listener(8088) {
 
     resource function get readiness() returns http:Ok => {body: {status: "ready"}};
 
-    resource function post invocations(InvocationRequest request, http:Headers headers,
-            string? agent_session_id) returns InvocationOk|http:InternalServerError {
+    resource function post invocations(http:Request req, http:Headers headers, string? agent_session_id)
+            returns InvocationOk|http:BadRequest|http:InternalServerError {
+        InvocationRequest|error request = parseInvocation(req);
+        if request is error {
+            return <http:BadRequest>{body: {message: request.message()}};
+        }
         string sessionId = resolveSessionId(agent_session_id, request?.sessionId);
         logSessionContext(sessionId, agent_session_id, headers);
 
@@ -30,6 +34,36 @@ service / on new http:Listener(8088) {
         }
         return <InvocationOk>{body: {response: answer, sessionId}};
     }
+}
+
+// Accepts `{"message": ...}`, `{"input": ...}` (what the Foundry playground sends) or a plain-text body.
+isolated function parseInvocation(http:Request req) returns InvocationRequest|error {
+    string body = (check req.getTextPayload()).trim();
+    json|error payload = body.fromJsonString();
+    if payload is string {
+        body = payload.trim();
+    } else if payload is map<json> {
+        json message = payload["message"] ?: payload["input"];
+        if message !is string || message.trim() == "" {
+            return error("Request must have a non-empty 'message' or 'input' string");
+        }
+        InvocationRequest request = {message};
+        json employeeId = payload["employeeId"];
+        if employeeId is string {
+            request.employeeId = employeeId;
+        }
+        json sessionId = payload["sessionId"];
+        if sessionId is string {
+            request.sessionId = sessionId;
+        }
+        return request;
+    } else if payload is json {
+        return error("Request must be a JSON object, a JSON string or plain text");
+    }
+    if body == "" {
+        return error("Request body is empty");
+    }
+    return {message: body};
 }
 
 // Picks the key for the agent's conversation memory.

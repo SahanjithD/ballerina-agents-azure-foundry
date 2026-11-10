@@ -39,7 +39,8 @@ type Policy record {|
     string summary;
 |};
 
-# Body of a `POST /invocations` request.
+# Body of a `POST /invocations` request. `input` is accepted as an alias for `message`, and a plain-text
+# body is treated as the message.
 type InvocationRequest record {
     # The user's message to the HR assistant
     string message;
