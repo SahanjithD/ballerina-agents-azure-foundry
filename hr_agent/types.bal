@@ -1,3 +1,5 @@
+import ballerina/http;
+
 type LeaveType "annual"|"sick"|"casual";
 
 type Employee record {|
@@ -51,4 +53,10 @@ type InvocationRequest record {
 type InvocationResponse record {|
     string response;
     string sessionId;
+|};
+
+// 200 OK instead of the default 201 Created for POST resources.
+type InvocationOk record {|
+    *http:Ok;
+    InvocationResponse body;
 |};

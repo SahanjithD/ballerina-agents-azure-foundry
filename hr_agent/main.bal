@@ -14,7 +14,7 @@ service / on new http:Listener(8088) {
     resource function get readiness() returns http:Ok => {body: {status: "ready"}};
 
     resource function post invocations(InvocationRequest request, http:Headers headers,
-            string? agent_session_id) returns InvocationResponse|http:InternalServerError {
+            string? agent_session_id) returns InvocationOk|http:InternalServerError {
         string sessionId = resolveSessionId(agent_session_id, request?.sessionId);
         logSessionContext(sessionId, agent_session_id, headers);
 
@@ -26,9 +26,9 @@ service / on new http:Listener(8088) {
         string|ai:Error answer = hrAgent.run(query, sessionId);
         if answer is ai:Error {
             log:printError("Agent run failed", answer, sessionId = sessionId);
-            return {body: {message: "The HR assistant could not process the request"}};
+            return <http:InternalServerError>{body: {message: "The HR assistant could not process the request"}};
         }
-        return {response: answer, sessionId};
+        return <InvocationOk>{body: {response: answer, sessionId}};
     }
 }
 
