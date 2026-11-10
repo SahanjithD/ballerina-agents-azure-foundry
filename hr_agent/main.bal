@@ -98,3 +98,13 @@ isolated function logSessionContext(string sessionId, string? querySessionId, ht
             platformSessionId = os:getEnv("FOUNDRY_AGENT_SESSION_ID"),
             querySessionId = querySessionId ?: "", agentHeaders = agentHeaders);
 }
+
+// Logs environment variable names (never values) at startup, to see what the Foundry sandbox provides,
+// e.g. managed-identity variables for keyless model access.
+final string[] envNames = logEnvNames();
+
+function logEnvNames() returns string[] {
+    string[] names = os:listEnv().keys().sort();
+    log:printInfo("Environment variable names", names = names);
+    return names;
+}
