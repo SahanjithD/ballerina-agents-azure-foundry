@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds the HR agent image, pushes it to ACR and creates a new Foundry hosted-agent version.
 # Usage: ./deploy.sh <tag>      e.g. ./deploy.sh v1
-# Reads AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_KEY and MODEL_DEPLOYMENT_NAME from .env; never prints them.
+# Reads AZURE_OPENAI_ENDPOINT and MODEL_DEPLOYMENT_NAME from .env. AZURE_OPENAI_KEY stays local: in Foundry the
+# agent calls the model with its own Entra identity, which needs Foundry User on the Foundry resource.
 set -euo pipefail
 
 TAG="${1:?usage: ./deploy.sh <tag>, e.g. v1 (unique per deploy, never latest)}"
@@ -20,7 +21,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 AGENT_JSON="${ROOT}/agent.json"
 
 set -a; source "${ROOT}/.env"; set +a
-for var in AZURE_OPENAI_ENDPOINT AZURE_OPENAI_KEY MODEL_DEPLOYMENT_NAME; do
+for var in AZURE_OPENAI_ENDPOINT MODEL_DEPLOYMENT_NAME; do
     [[ -n "${!var:-}" ]] || { echo "${var} is not set in .env" >&2; exit 1; }
 done
 [[ "${AZURE_OPENAI_ENDPOINT%/}" == */openai/v1 ]] \
@@ -55,12 +56,10 @@ else
     name=""
 fi
 
-# The definition carries the model key, so it goes in a gitignored, owner-only file and is posted
-# from there rather than on the command line.
+# The definition holds no secrets now, but it stays in a gitignored, owner-only file and is posted from there.
 umask 077
 jq -n --arg name "$name" --arg image "$IMAGE" \
     --arg endpoint "$AZURE_OPENAI_ENDPOINT" \
-    --arg key "$AZURE_OPENAI_KEY" \
     --arg deployment "$MODEL_DEPLOYMENT_NAME" \
     '(if $name == "" then {} else {name: $name} end) + {
         definition: {
@@ -71,7 +70,6 @@ jq -n --arg name "$name" --arg image "$IMAGE" \
             protocol_versions: [{protocol: "invocations", version: "2.0.0"}],
             environment_variables: {
                 AZURE_OPENAI_ENDPOINT: $endpoint,
-                AZURE_OPENAI_KEY: $key,
                 MODEL_DEPLOYMENT_NAME: $deployment
             }
         }

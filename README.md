@@ -42,6 +42,29 @@ AZURE_OPENAI_ENDPOINT=https://unused.invalid/openai/v1 AZURE_OPENAI_KEY=unused M
 ./deploy.sh v6    # a new, unique tag each time; never "latest"
 ```
 
+## Model authentication
+
+| Where | How | Needs |
+| --- | --- | --- |
+| Foundry sandbox | The agent's own Entra identity (`bal-demo-agent-AgentIdentity`), with a token for `https://cognitiveservices.azure.com` from the sandbox's managed-identity endpoint | **Foundry User** on `foundry-dasuns-demo` for the agent identity (object ID = app ID `f57f194f-4573-4207-913f-72365879981b`) |
+| Local runs | `AZURE_OPENAI_KEY` from `.env` | the key |
+
+The mode is chosen at startup: if `IDENTITY_ENDPOINT` and `IDENTITY_HEADER` are set (as they are in a
+Foundry sandbox), it's identity mode; otherwise key mode. The log shows `Model auth: agent identity` or
+`Model auth: API key`, and never the secret.
+
+- **Token request**: the same one azure-identity's `ManagedIdentityCredential` makes (App Service flow):
+  `GET $IDENTITY_ENDPOINT?api-version=2019-08-01&resource=https://cognitiveservices.azure.com&client_id=$FOUNDRY_AGENT_INSTANCE_CLIENT_ID`
+  with the header `X-IDENTITY-HEADER: $IDENTITY_HEADER`.
+- **Caching**: tokens are cached and refreshed 5 minutes before they expire.
+- **Why there's a local hop**: `ballerinax/ai.azure` 1.5.1 can only send an `api-key` header. In identity mode
+  the provider calls a local hop on `127.0.0.1:8089`, which replaces that header with
+  `Authorization: Bearer <token>` and forwards to `AZURE_OPENAI_ENDPOINT` (`hr_agent/identity.bal`). See
+  `docs/upstream-proposal-ai-azure-entra-auth.md`.
+- **No key in Foundry**: `deploy.sh` no longer sends `AZURE_OPENAI_KEY` to Foundry.
+- **Token audiences**: `https://ai.azure.com` is for calling the Foundry agent endpoint (callers,
+  `deploy.sh`); `https://cognitiveservices.azure.com` is for the agent calling the model.
+
 ## API
 
 ### `POST /invocations`
