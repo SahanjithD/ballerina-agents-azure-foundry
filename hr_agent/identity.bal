@@ -128,6 +128,8 @@ isolated function startModelProxy(string modelEndpoint, ManagedIdentityTokenProv
     check proxyListener.attach(new ModelProxyService(upstream, tokens, check hostOf(origin)), "/");
     check proxyListener.'start();
     runtime:registerListener(proxyListener);
+    log:printInfo("Model token proxy listening", address = string `${MODEL_PROXY_HOST}:${MODEL_PROXY_PORT}`,
+            upstream = origin);
     return string `http://${MODEL_PROXY_HOST}:${MODEL_PROXY_PORT}${path}`;
 }
 

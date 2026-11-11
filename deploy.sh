@@ -68,6 +68,7 @@ jq -n --arg name "$name" --arg image "$IMAGE" \
             cpu: "1",
             memory: "2Gi",
             protocol_versions: [{protocol: "invocations", version: "2.0.0"}],
+            session_configuration: {idle_timeout_seconds: 300},
             environment_variables: {
                 AZURE_OPENAI_ENDPOINT: $endpoint,
                 MODEL_DEPLOYMENT_NAME: $deployment
