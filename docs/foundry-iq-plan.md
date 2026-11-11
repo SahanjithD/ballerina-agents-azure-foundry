@@ -1,6 +1,6 @@
 # Foundry IQ knowledge base for the HR agent: plan and cost
 
-Status: **plan only, nothing created yet.** Every step that costs money or changes permissions waits for an explicit OK.
+Status: **superseded by `ai-search-kb-plan.md` (2026-11-11). Nothing was created.**
 Scope: subscription `integration-rnd-001`, resource group `rg-foundry-dasuns`, region **East US**. Every new resource
 is tagged `RequestedBy=dasuns@wso2.com`.
 
