@@ -130,6 +130,22 @@ function requestIdIsEchoed() returns error? {
 }
 
 @test:Config {}
+function requestIdFallsBackToTheTraceparentTraceId() returns error? {
+    http:Response res = check agentClient->get("/readiness",
+            {"traceparent": "00-c8f7a64bded47651f39fed6f883c13f4-41e18d4355c7b58d-01"});
+    test:assertEquals(check res.getHeader(REQUEST_ID_HEADER), "c8f7a64bded47651f39fed6f883c13f4");
+}
+
+@test:Config {}
+function malformedTraceparentIsIgnored() {
+    test:assertEquals(traceIdFromTraceparent("00-c8f7a64bded47651f39fed6f883c13f4-41e18d4355c7b58d-01"),
+            "c8f7a64bded47651f39fed6f883c13f4");
+    test:assertEquals(traceIdFromTraceparent("00-00000000000000000000000000000000-41e18d4355c7b58d-01"), ());
+    test:assertEquals(traceIdFromTraceparent("not-a-traceparent"), ());
+    test:assertEquals(traceIdFromTraceparent("00-C8F7A64BDED47651F39FED6F883C13F4-41e18d4355c7b58d-01"), ());
+}
+
+@test:Config {}
 function badBodyIsAUserError() returns error? {
     http:Response res = check agentClient->post("/invocations", {}, {[REQUEST_ID_HEADER]: "req-400"});
     test:assertEquals(res.statusCode, 400);

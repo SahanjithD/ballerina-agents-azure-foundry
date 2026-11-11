@@ -81,12 +81,33 @@ isolated function requestIdFor(http:Request req) returns string {
     if requestId is string && requestId.trim() != "" {
         return requestId;
     }
-    string? traceId = observe:getSpanContext()["traceId"];
-    if traceId is string && traceId != "" && traceId != "00000000000000000000000000000000" {
-        return traceId;
+    // The span context isn't set up yet when request interceptors run, so read the incoming W3C trace context
+    // first (Foundry's gateway sends `traceparent`, and its own x-request-id is that trace ID).
+    string|http:HeaderNotFoundError traceparent = req.getHeader("traceparent");
+    if traceparent is string {
+        string? traceId = traceIdFromTraceparent(traceparent);
+        if traceId is string {
+            return traceId;
+        }
+    }
+    string? spanTraceId = observe:getSpanContext()["traceId"];
+    if spanTraceId is string && isValidTraceId(spanTraceId) {
+        return spanTraceId;
     }
     return uuid:createType4AsString();
 }
+
+// `traceparent` is `version-traceid-parentid-flags`, with a 32-hex-digit trace ID.
+isolated function traceIdFromTraceparent(string traceparent) returns string? {
+    string[] parts = re `-`.split(traceparent.trim());
+    if parts.length() != 4 || !isValidTraceId(parts[1]) {
+        return ();
+    }
+    return parts[1];
+}
+
+isolated function isValidTraceId(string traceId) returns boolean =>
+    re `[0-9a-f]{32}`.isFullMatch(traceId) && traceId != "00000000000000000000000000000000";
 
 isolated function errorSource(error err) returns ErrorSource {
     if err is InvalidRequestError || err is SessionMismatchError {

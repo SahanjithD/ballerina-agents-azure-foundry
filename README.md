@@ -107,7 +107,7 @@ Inside the container, the conversation memory is keyed like this:
 | Header | When | Value |
 | --- | --- | --- |
 | `x-platform-server` | every response | `bal-foundry-host/<version> (ballerina/<distribution>)`, from `Ballerina.toml` |
-| `x-request-id` | every response | the caller's `x-request-id` if sent, otherwise the trace ID, otherwise a new UUID |
+| `x-request-id` | every response | the incoming `x-request-id` if sent, otherwise the trace ID from `traceparent`, otherwise a new UUID. In Foundry the gateway doesn't forward the caller's `x-request-id`. It adds its own (the trace ID) in front of the container's, so callers see `<gateway id>,<container id>` |
 | `x-agent-session-id` | successful `/invocations` | the session ID used for the conversation memory |
 | `x-platform-error-source` | every 4xx and 5xx | `user` (bad request, session mismatch, unknown route), `upstream` (the model call failed: an `ai:LlmError` in the error chain), `platform` (any other failure in this service) |
 
