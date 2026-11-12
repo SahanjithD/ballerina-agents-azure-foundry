@@ -1,4 +1,8 @@
+# Allow-list: only what the image build needs. Keeps target/, Config.toml and anything else local out of
+# the build context (which azd uploads to ACR for remote builds).
 *
-!target/bin/hr_agent.jar
-!start.sh
+!Ballerina.toml
+!Dependencies.toml
+!*.bal
 !otel/
+!start.sh
