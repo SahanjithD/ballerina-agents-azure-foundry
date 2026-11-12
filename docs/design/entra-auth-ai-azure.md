@@ -1,6 +1,6 @@
 # Design: Microsoft Entra ID (keyless) authentication for `ballerinax/ai.azure`
 
-**Status:** draft, in progress (research complete; requirements, options and design to follow)
+**Status:** draft, in progress (research and requirements done; options and design to follow)
 **Audience:** Ballerina AI team (ballerina/ai and ballerinax/ai.* maintainers)
 
 <!-- Sections 1, 2 and 4–9 are filled in at later checkpoints. -->
@@ -11,7 +11,60 @@ _To be written after the design is agreed._
 
 ## 2. Problem and requirements
 
-_Next checkpoint._
+### 2.1 Problem
+
+`ballerinax/ai.azure` can only authenticate with an API key (§3.1). Teams that disable keys
+(`disableLocalAuth: true`), or that run on Azure compute with a managed identity, can't use it without workarounds.
+The same applies to AKS workload identity, Foundry hosted agents, service principals on-prem, and developers
+signed in with `az login`. Users can't work around it themselves:
+
+- `http:ClientConfiguration.auth` has no token-provider hook (H1).
+- The OAuth2 config only fits a client secret, and it panics at init (H4, §3.3).
+- A provider can't be wrapped in pure Ballerina (A8).
+
+The only option today is a local proxy that swaps headers, like `hr_agent/identity.bal`, copied into every app.
+Python and Java users write `DefaultAzureCredential()`.
+
+### 2.2 Functional requirements
+
+| # | Requirement | Priority |
+|---|---|---|
+| FR1 | Keyless auth for **all** `ai.azure` entry points: `OpenAiModelProvider` (chat and responses, v1 and legacy), `EmbeddingProvider` (v1 and legacy) and `AiSearchKnowledgeBase` (search and index clients). | Must |
+| FR2 | Existing code that passes an API key keeps compiling and behaving the same. | Must |
+| FR3 | Credential sources: **managed identity** (App Service-style endpoint, which also covers Foundry hosted agents and Container Apps; plus IMDS for VMs, VMSS and AKS node identity), **workload identity** (AKS, federated token file), **service principal with client secret**, **Azure CLI** (developer machines), **static token**, and a **user-supplied token provider** (escape hatch). | Must |
+| FR4 | Service principal with **certificate**. Many organisations forbid secrets for service principals. | Should (phase 2) |
+| FR5 | A **default chain** for "works here and in Azure" without code changes: Environment → Workload identity → Managed identity → Azure CLI. It follows azure-identity's rules: unavailable → next, failure → stop, and remember the source that worked (M1, M2). It can be narrowed to production-only or developer-only sources (like `AZURE_TOKEN_CREDENTIALS`, M3). | Must |
+| FR6 | The **scope** is configurable per client, with correct defaults per endpoint: project endpoint → `ai.azure.com` (§3.6 Observed), Search → `search.azure.com`. | Must |
+| FR7 | Credential settings can be expressed as **plain data** (records, enums, strings), so they work as `configurable` values in Config.toml and as forms in WSO2 Integrator. Objects and functions are only the pro-code escape hatch. | Must |
+| FR8 | User-assigned managed identity can be selected by client ID, defaulting to `AZURE_CLIENT_ID` as azure-identity does. | Must |
+| FR9 | One credential instance can be **shared** by the model, embedding and knowledge-base clients, with one cache per scope. | Should |
+| FR10 | Sovereign clouds: the authority host and scope can be overridden. | Should |
+| FR11 | The credential type is not specific to AI: other Azure connectors (Search, Key Vault, Storage…) can reuse it later. | Should |
+
+### 2.3 Non-functional requirements
+
+| # | Requirement |
+|---|---|
+| NF1 | **Isolated:** the credential and the provider stay `isolated` and are safe under concurrent strands. |
+| NF2 | **Caching:** refresh 300 s before expiry, or at `refresh_on` when present; at most one refresh in flight per scope; retry a failed refresh at most every 30 s; keep serving the cached token while it is still valid (M8). |
+| NF3 | **No panics, no network calls during construction.** A temporary Entra outage must not crash the program (unlike H4). Errors surface as `ai:Error` on the first call. |
+| NF4 | **Error messages** name the credential and the cause. A chain error lists every attempted source and why it was skipped. Service 401/403 responses mention the audience/role as hints. Errors are typed so callers can tell "no credential available" from "denied". |
+| NF5 | **Secrets never leak:** tokens, client secrets, assertions and `IDENTITY_HEADER` values are never logged, put in error messages, or added to spans. Token endpoint error bodies are reduced to the `error`/`AADSTS` code and description. |
+| NF6 | **TLS and proxies:** token requests to Entra use the same `secureSocket` / `proxy` settings as the service client. This covers Foundry's `SSL_CERT_FILE` CA bundle and corporate proxies. The local metadata endpoints (IMDS, `IDENTITY_ENDPOINT`) are never sent through a proxy. |
+| NF7 | **Observability:** log at debug level which source was selected and how long the token lives (never the token itself). Token fetch failures appear as errors on the existing model and embedding spans. |
+| NF8 | **Testable without Azure:** every endpoint can be overridden (authority host, IMDS / identity endpoint, CLI command), so unit tests run against mock services. A static or fake credential is available for tests. |
+| NF9 | **Light and portable:** no heavy dependency stack in `ai.azure`; works with `bal build --graalvm`; no new Netty or reactor stack next to `ballerina/http`. |
+| NF10 | **Bounded startup:** probing the chain takes at most about 1–2 s on machines without IMDS (azure-identity uses a 1 s probe, M7). The Azure CLI call times out after 10 s. |
+| NF11 | **Non-breaking:** shipped as a minor release of `ai.azure`. |
+
+### 2.4 Out of scope (v1)
+
+- Interactive or user-delegated flows: browser, device code, username/password, on-behalf-of.
+- IDE and other CLI credentials: VS Code, IntelliJ, PowerShell, azd, the WAM broker, and the shared token cache.
+- Managed-identity flavours with tiny reach: Service Fabric, Azure Arc, Azure ML, Cloud Shell. Arc may be revisited for on-prem.
+- Continuous access evaluation (CAE) and claims challenges, and persisting tokens to disk.
+- Changing the other `ai.*` providers. §7 only states what this design means for them.
+- Foundry-specific features (agent identity blueprints, OBO for agents).
 
 ## 3. Verified facts and open questions
 
@@ -43,7 +96,7 @@ Experiments ran locally on Ballerina 2201.14.0 against mock endpoints only (no A
 | A4 | `EmbeddingProvider.init(serviceUrl, string accessToken, apiVersion, deploymentId, ...)`. The parameter is named and labelled **"Access Token" but is sent as `api-key`**, so the existing name is misleading. v1 uses a raw client with a per-call header; legacy uses the generated `azure.openai.embeddings` with `auth: {apiKey}`. | `embedding_provider.bal:62-67, 183-186, 237` |
 | A5 | `AiSearchKnowledgeBase.init(serviceUrl, string apiKey, index, ...)` passes `{"api-key": apiKey}` as a per-call header on every `azure.ai.search` / `azure.ai.search.index` call. Those connectors' `ConnectionConfig` has **no `auth` field**. | `azure_ai_search_knowledgebase.bal:113, 141, 154, 214, 299, 346, 383`; `azure.ai.search` 1.0.2 `types.bal:129` |
 | A6 | Generated `azure.openai.{chat,responses,embeddings}` take `auth: http:BearerTokenConfig\|ApiKeysConfig` (required). A bearer token is passed into `http:ClientConfiguration.auth` as a **static** token. | `azure.openai.chat` 4.0.0 `types.bal:138`, `client.bal:31-39` |
-| A7 | **Experiment E-H:** with a static `BearerTokenConfig`, the configured token **overrides** a per-call `Authorization` header. With `ApiKeysConfig`, an `api-key` header is **always** sent, even an empty one. So a refreshing token cannot be attached through today's generated connectors without changing them or bypassing them. | [`headers/main.bal`](entra-auth-experiments/headers/main.bal); http `auth_client_bearer_token_auth_handler.bal:34` (`setHeader` overwrites) |
+| A7 | **Experiment E-H:** with a static `BearerTokenConfig`, the configured token **overrides** a per-call `Authorization` header. With `ApiKeysConfig`, an `api-key` header is **always** sent, even an empty one. So a refreshing token cannot be attached *cleanly* through today's generated connectors. (Azure OpenAI itself tolerates the stray empty `api-key` when a valid Bearer is present: Q2 in §3.8.) | [`headers/main.bal`](entra-auth-experiments/headers/main.bal); http `auth_client_bearer_token_auth_handler.bal:34` (`setHeader` overwrites) |
 | A8 | `ai:ModelProvider.generate` is dependently typed and implemented as `external` in every provider. A pure-Ballerina wrapper that delegates to an inner provider does not compile (`a function with a non-'external' function body cannot be a dependently-typed function`). Users therefore can't fix auth by wrapping a provider. | ai `model-provider.bal:117-133`; [`dtcheck/main.bal`](entra-auth-experiments/dtcheck/main.bal) |
 
 ### 3.2 `ballerina/http` and `ballerina/oauth2`
@@ -113,6 +166,21 @@ request.
 | Azure AI Search data plane | `https://search.azure.com/.default`. The service must have RBAC enabled ("Role-based access control" or "Both"); the default is keys only. | [search-security-enable-roles](https://learn.microsoft.com/en-us/azure/search/search-security-enable-roles) |
 | Sovereign clouds | Authority `login.microsoftonline.us` / `login.chinacloudapi.cn`; Gov AOAI uses `https://cognitiveservices.azure.us/.default` | py `_constants.py:34-36`; Azure Government docs |
 
+**Observed (Q1, 2026-11-13).** These were read-only calls with an `az login` user token (role *Foundry User*)
+against an `AIServices` account and a `gpt-5.5` deployment, each with one minimal prompt. Only the HTTP status
+was recorded. The script is [`probe.sh`](entra-auth-experiments/probe.sh).
+
+| Endpoint | Token for `cognitiveservices.azure.com` | Token for `ai.azure.com` |
+|---|---|---|
+| v1 chat, `<res>.openai.azure.com/openai/v1` | 200 | 200 |
+| v1 chat, `<res>.services.ai.azure.com/openai/v1` | 200 | 200 |
+| legacy chat, `/openai/deployments/<d>/chat/completions?api-version=2024-10-21` | 200 | 200 |
+| project, `GET /api/projects/<p>/deployments?api-version=v1` | **401** "audience is incorrect (https://ai.azure.com)" | 200 |
+| project, v1 chat `/api/projects/<p>/openai/v1/chat/completions` | **401** | 200 |
+
+So account-level endpoints accept **both** audiences, while the **project endpoint accepts only `ai.azure.com`**.
+This was not tested on a classic `kind: OpenAI` resource or in a sovereign cloud (see Q1b).
+
 ### 3.7 Existing Ballerina building blocks
 
 | # | Fact | Source |
@@ -126,8 +194,10 @@ request.
 
 | # | Question | How to verify | Blocks |
 |---|---|---|---|
-| Q1 | Is `https://ai.azure.com/.default` accepted on the **legacy** `/openai/deployments` route, and `cognitiveservices` on the project / Claude endpoints? | Read-only calls with tokens for each resource (`az account get-access-token --resource …`) against an existing deployment. **Needs Azure; ask first.** | Default scope per endpoint |
-| Q2 | Does Azure OpenAI / APIM reject a request that carries an **empty `api-key` header** next to a valid Bearer token (A7 shape)? | One read-only call. **Needs Azure; ask first.** | Whether ai.azure can reuse today's generated connectors unchanged |
+| ~~Q1~~ | **Answered (§3.6 "Observed")**: account endpoints (v1 and legacy) accept both audiences; the project endpoint accepts only `ai.azure.com`. | `probe.sh` | — |
+| Q1b | Does a classic `kind: OpenAI` resource, or a sovereign cloud, accept `ai.azure.com` tokens? | Same probe against a classic AOAI resource (none in our resource group) | Whether `ai.azure.com` can be the single default |
+| ~~Q2~~ | **Answered**: Azure OpenAI returns 200 when a valid Bearer token comes with an **empty or placeholder `api-key`** header (v1 and legacy). An APIM front end with key-validation policies was not tested. | `probe.sh` | — |
+| Q2b | Do APIM / gateway front ends reject a junk `api-key` sent next to a Bearer token? | Test against an APIM instance with `validate-azure-ad-token` and a subscription-key policy | Whether the "dummy api-key" shortcut is safe in general (it is not proposed) |
 | Q3 | Does the Foundry token service ever return `expires_in` / `refresh_in`, or set other identity env vars? | Log env var **names** and response **keys** (never values) in a test agent | Parser robustness (we already accept both) |
 | Q4 | `FOUNDRY_AGENT_INSTANCE_CLIENT_ID` (used by identity.bal, taken from Microsoft Agent Framework samples) is not in the Learn docs. Is passing it as `client_id` required, or is the default identity always the instance? | Compare token `oid`/`appid` claims with and without `client_id` (decode locally, don't log the token) | Whether the MI source needs a Foundry-specific env var at all |
 | Q5 | Does Entra accept `client_assertion` sent alongside a dummy `client_secret` / Basic header? | Sandbox tenant curl | Only matters if we tried to reuse oauth2 for assertions (we don't propose that) |
