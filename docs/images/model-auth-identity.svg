@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="720" viewBox="0 0 1500 720" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+  </defs>
+  <rect width="1500" height="720" fill="#ffffff"/>
+
+  <text x="30" y="45" font-size="24" font-weight="700" fill="#0f172a">Model auth in Foundry: the agent's Entra identity, no API key</text>
+
+  <!-- Sandbox -->
+  <rect x="30" y="80" width="900" height="540" rx="14" fill="#f8fafc" stroke="#94a3b8" stroke-width="2" stroke-dasharray="8 6"/>
+  <text x="50" y="110" font-size="16" font-weight="600" fill="#475569">Foundry sandbox (hosted agent container)</text>
+
+  <!-- A: agent -->
+  <rect x="70" y="150" width="270" height="130" rx="10" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"/>
+  <text x="205" y="195" font-size="19" font-weight="700" fill="#0c4a6e" text-anchor="middle">ai:Agent</text>
+  <text x="205" y="225" font-size="15" fill="#0c4a6e" text-anchor="middle">azure:OpenAiModelProvider</text>
+  <text x="205" y="252" font-size="14" fill="#475569" text-anchor="middle">endpoint = local proxy</text>
+
+  <!-- B: proxy -->
+  <rect x="580" y="150" width="310" height="130" rx="10" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+  <text x="735" y="195" font-size="19" font-weight="700" fill="#78350f" text-anchor="middle">Model token proxy</text>
+  <text x="735" y="225" font-size="15" fill="#78350f" text-anchor="middle">127.0.0.1:8089 · identity.bal</text>
+  <text x="735" y="252" font-size="14" fill="#475569" text-anchor="middle">caches token, refreshes 5 min early</text>
+
+  <!-- C: managed identity endpoint -->
+  <rect x="580" y="440" width="310" height="130" rx="10" fill="#ede9fe" stroke="#7c3aed" stroke-width="2"/>
+  <text x="735" y="485" font-size="19" font-weight="700" fill="#4c1d95" text-anchor="middle">Managed-identity endpoint</text>
+  <text x="735" y="515" font-size="15" fill="#4c1d95" text-anchor="middle">$IDENTITY_ENDPOINT</text>
+  <text x="735" y="542" font-size="14" fill="#475569" text-anchor="middle">provided by the sandbox</text>
+
+  <!-- D: model -->
+  <rect x="1110" y="150" width="360" height="130" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="1290" y="195" font-size="19" font-weight="700" fill="#14532d" text-anchor="middle">Azure OpenAI model</text>
+  <text x="1290" y="225" font-size="15" fill="#14532d" text-anchor="middle">Foundry resource</text>
+  <text x="1290" y="252" font-size="14" fill="#475569" text-anchor="middle">$AZURE_OPENAI_ENDPOINT (/openai/v1)</text>
+
+  <!-- E: Entra role -->
+  <rect x="1110" y="440" width="360" height="130" rx="10" fill="#f1f5f9" stroke="#475569" stroke-width="2"/>
+  <text x="1290" y="485" font-size="19" font-weight="700" fill="#1e293b" text-anchor="middle">Entra ID</text>
+  <text x="1290" y="515" font-size="15" fill="#1e293b" text-anchor="middle">&lt;agent&gt;-AgentIdentity</text>
+  <text x="1290" y="542" font-size="14" fill="#475569" text-anchor="middle">role: Foundry User on the Foundry resource</text>
+
+  <!-- 1: A -> B -->
+  <line x1="340" y1="215" x2="578" y2="215" stroke="#334155" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="459" y="200" font-size="15" font-weight="600" fill="#0f172a" text-anchor="middle">① chat request</text>
+  <text x="459" y="240" font-size="13" fill="#475569" text-anchor="middle">api-key: placeholder</text>
+
+  <!-- 2: B -> C -->
+  <line x1="690" y1="280" x2="690" y2="438" stroke="#334155" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="675" y="325" font-size="15" font-weight="600" fill="#0f172a" text-anchor="end">② GET token</text>
+  <text x="675" y="350" font-size="13" fill="#475569" text-anchor="end">resource=https://cognitiveservices.azure.com</text>
+  <text x="675" y="370" font-size="13" fill="#475569" text-anchor="end">client_id=$FOUNDRY_AGENT_INSTANCE_CLIENT_ID</text>
+  <text x="675" y="390" font-size="13" fill="#475569" text-anchor="end">X-IDENTITY-HEADER: $IDENTITY_HEADER</text>
+
+  <!-- 3: C -> B -->
+  <line x1="790" y1="440" x2="790" y2="282" stroke="#334155" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="805" y="355" font-size="15" font-weight="600" fill="#0f172a">③ access token</text>
+
+  <!-- 4: B -> D -->
+  <line x1="890" y1="215" x2="1108" y2="215" stroke="#334155" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="999" y="200" font-size="15" font-weight="600" fill="#0f172a" text-anchor="middle">④ forward</text>
+  <text x="999" y="240" font-size="13" fill="#475569" text-anchor="middle">api-key removed</text>
+  <text x="999" y="258" font-size="13" fill="#475569" text-anchor="middle">Authorization: Bearer</text>
+
+  <!-- 5: D checks role in E -->
+  <line x1="1290" y1="282" x2="1290" y2="438" stroke="#64748b" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#arrow)"/>
+  <text x="1305" y="365" font-size="15" font-weight="600" fill="#0f172a">⑤ checks the role</text>
+
+  <!-- Footer -->
+  <text x="30" y="665" font-size="15" fill="#334155">Identity mode turns on when IDENTITY_ENDPOINT and IDENTITY_HEADER are set (always true in a Foundry sandbox).</text>
+  <text x="30" y="690" font-size="15" fill="#334155">Local runs have neither, so the provider calls the model directly with AZURE_OPENAI_KEY from .env.</text>
+</svg>

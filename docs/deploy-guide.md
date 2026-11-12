@@ -42,6 +42,13 @@ service / on new http:Listener(8088) {
 - Keep anything that must survive idle in `$HOME`. Memory is lost when the session's sandbox goes idle.
 - In Foundry, call the model with the agent's Entra identity, not an API key. See `hr_agent/identity.bal`.
 
+![Model auth in Foundry with the agent's Entra identity](images/model-auth-identity.png)
+
+`ballerinax/ai.azure` can only send an `api-key` header, so in Foundry the provider calls a local proxy.
+The proxy gets a token from the sandbox's managed-identity endpoint and forwards the call with
+`Authorization: Bearer <token>`. The agent identity needs **Foundry User** on the Foundry resource
+(step 6). Source for the diagram: `images/model-auth-identity.svg`.
+
 ## 2. Add a Dockerfile
 
 Ballerina 2201.14 needs Java 25:
