@@ -42,6 +42,8 @@ AZURE_OPENAI_ENDPOINT=https://unused.invalid/openai/v1 AZURE_OPENAI_KEY=unused M
 ./deploy.sh v6    # a new, unique tag each time; never "latest"
 ```
 
+For the full setup from scratch, see [docs/deploy-guide.md](docs/deploy-guide.md).
+
 ## Model authentication
 
 | Where | How | Needs |
