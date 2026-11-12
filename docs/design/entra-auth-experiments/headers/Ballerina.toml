@@ -1,0 +1,10 @@
+[package]
+org = "exp"
+name = "headers"
+version = "0.1.0"
+distribution = "2201.14.0"
+
+[[dependency]]
+org = "ballerinax"
+name = "azure.openai.chat"
+version = "4.0.0"

@@ -1,0 +1,48 @@
+
+
+
+=== E1: client_credentials + scopes + optionalParams(client_assertion) + POST_BODY_BEARER
+[token-endpoint] call #1 Content-Type=application/x-www-form-urlencoded Authorization=-
+[token-endpoint]   body=grant_type=client_credentials&scope=https://cognitiveservices.azure.com/.default&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln&client_id=my-client-id&client_secret=dummy
+token calls right after http:Client init (no request yet): 1
+
+=== E2: default credentialBearer (AUTH_HEADER_BEARER), scopes as array
+[token-endpoint] call #2 Content-Type=application/x-www-form-urlencoded Authorization=Basic bXktY2xpZW50LWlkOnMzY3IrdCZ4PTE=
+[token-endpoint]   body=grant_type=client_credentials&scope=https://cognitiveservices.azure.com/.default
+
+=== E3: JwtBearerGrantConfig (no client id/secret)
+[token-endpoint] call #3 Content-Type=application/x-www-form-urlencoded Authorization=-
+[token-endpoint]   body=grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=eyJ.assertion.sig&scope=https://cognitiveservices.azure.com/.default
+
+=== E4: 20 concurrent requests on c1 while token valid
+token fetches during burst: 0; distinct Authorization headers seen by API: ["Bearer tok-1"]
+
+=== E5: wait 3s (token expires_in=2), then 20 concurrent requests
+[token-endpoint] call #4 Content-Type=application/x-www-form-urlencoded Authorization=-
+[token-endpoint]   body=grant_type=client_credentials&scope=https://cognitiveservices.azure.com/.default&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln&client_id=my-client-id&client_secret=dummy
+token fetches during burst after expiry: 1; distinct Authorization headers: ["Bearer tok-4"]
+
+=== E6: 401 from API (token still valid) - any refetch/retry?
+[token-endpoint] call #5 Content-Type=application/x-www-form-urlencoded Authorization=-
+[token-endpoint]   body=grant_type=client_credentials&scope=https://cognitiveservices.azure.com/.default&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln&client_id=my-client-id&client_secret=dummy
+[api] /unauthorized got Authorization=Bearer tok-5
+result: 401; api calls=1; token fetches=0
+[api] /unauthorized got Authorization=Bearer tok-5
+second call: api calls total=2; token fetches=0
+
+=== E7: retryConfig statusCodes=[401] count=2
+[token-endpoint] call #6 Content-Type=application/x-www-form-urlencoded Authorization=Basic aWQ6c2Vj
+[token-endpoint]   body=grant_type=client_credentials
+[api] /unauthorized got Authorization=Bearer tok-6
+[api] /unauthorized got Authorization=Bearer tok-6
+[api] /unauthorized got Authorization=Bearer tok-6
+result: 401; api calls=3; token fetches=0
+
+=== E8: empty clientSecret
+init failed: Client-id or client-secret cannot be empty. | detail: {}
+
+=== E9: token endpoint unreachable at init
+init failed (trapped): Failed to call the token endpoint 'http://localhost:9199/token'.
+
+=== E10: BearerTokenConfig is static
+API saw: Bearer static-abc

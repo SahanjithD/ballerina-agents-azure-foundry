@@ -1,0 +1,9 @@
+1) auth=api-key 'K', no extra headers
+  server saw: {"api-key":"K","authorization":"<absent>"}
+2) auth=api-key '', per-call Authorization
+  server saw: {"api-key":"<empty>","authorization":"Bearer PER-CALL"}
+3) auth=BearerTokenConfig 'STATIC', per-call Authorization
+  server saw: {"api-key":"<absent>","authorization":"Bearer STATIC"}
+4) auth=BearerTokenConfig 'STATIC', no extra headers
+  server saw: {"api-key":"<absent>","authorization":"Bearer STATIC"}
+error: done (exit)

@@ -1,0 +1,160 @@
+# Design: Microsoft Entra ID (keyless) authentication for `ballerinax/ai.azure`
+
+**Status:** draft, in progress (research complete; requirements, options and design to follow)
+**Audience:** Ballerina AI team (ballerina/ai and ballerinax/ai.* maintainers)
+
+<!-- Sections 1, 2 and 4–9 are filled in at later checkpoints. -->
+
+## 1. Summary
+
+_To be written after the design is agreed._
+
+## 2. Problem and requirements
+
+_Next checkpoint._
+
+## 3. Verified facts and open questions
+
+Source snapshots used for every code reference below:
+
+| Repo (github.com/ballerina-platform) | Commit | Package version |
+|---|---|---|
+| module-ballerinax-ai.azure | `5fd8ed1` (2026-10-15) | 1.5.1 (identical to the published 1.5.1 bala) |
+| module-ballerina-http | `d710c4a` (2026-11-12) | 2.18.3-SNAPSHOT (experiments ran on 2.18.2) |
+| module-ballerina-oauth2 | `604caa6` (2026-10-20) | 2.15.1-SNAPSHOT |
+| module-ballerina-jwt | `29a35f5` | 2.15.2-SNAPSHOT |
+| module-ballerina-ai | `f64e392` (2026-11-11) | 1.17.0-SNAPSHOT |
+| ai.anthropic / ai.aws.bedrock / ai.googleapis.vertex / ai.openrouter | `df74901` / `8184e48` / `862f555` / `9633195` | 1.4.0 / 1.0.1 / 1.0.3 / 1.0.3 |
+| Generated connectors (published balas) | — | azure.openai.chat 4.0.0, azure.openai.responses 1.0.0, azure.openai.embeddings 1.0.2, azure.ai.search(.index) 1.0.2, ballerinax/aws 1.1.0 |
+
+Microsoft sources: azure-identity Python `main` (1.27.x, MSAL Python 1.39.0) and azure-identity Java `main`
+(1.20.0-beta.1; latest Maven release 1.19.0), plus the Microsoft Learn pages linked inline.
+
+Experiments ran locally on Ballerina 2201.14.0 against mock endpoints only (no Azure). Their source is in
+[`entra-auth-experiments/`](entra-auth-experiments/).
+
+### 3.1 `ai.azure` today
+
+| # | Fact | Source |
+|---|---|---|
+| A1 | Every request authenticates with a static `api-key` header. `ConnectionConfig` has no `auth` field. | `ballerina/types.bal` (ConnectionConfig) |
+| A2 | `OpenAiModelProvider.init(serviceUrl, string apiKey, deploymentId, ...)` | `model-provider.bal:87-96` |
+| A3 | The model provider has four wire paths. Chat v1 and Responses v1 go through the generated connectors with `auth: {api-key}`. Chat legacy and Responses legacy go through a raw `http:Client` with a per-call `{"api-key": apiKey}` header. | `provider_utils.bal:523-524, 383-385`; `responses_utils.bal:355-356, 310-311` |
+| A4 | `EmbeddingProvider.init(serviceUrl, string accessToken, apiVersion, deploymentId, ...)`. The parameter is named and labelled **"Access Token" but is sent as `api-key`**, so the existing name is misleading. v1 uses a raw client with a per-call header; legacy uses the generated `azure.openai.embeddings` with `auth: {apiKey}`. | `embedding_provider.bal:62-67, 183-186, 237` |
+| A5 | `AiSearchKnowledgeBase.init(serviceUrl, string apiKey, index, ...)` passes `{"api-key": apiKey}` as a per-call header on every `azure.ai.search` / `azure.ai.search.index` call. Those connectors' `ConnectionConfig` has **no `auth` field**. | `azure_ai_search_knowledgebase.bal:113, 141, 154, 214, 299, 346, 383`; `azure.ai.search` 1.0.2 `types.bal:129` |
+| A6 | Generated `azure.openai.{chat,responses,embeddings}` take `auth: http:BearerTokenConfig\|ApiKeysConfig` (required). A bearer token is passed into `http:ClientConfiguration.auth` as a **static** token. | `azure.openai.chat` 4.0.0 `types.bal:138`, `client.bal:31-39` |
+| A7 | **Experiment E-H:** with a static `BearerTokenConfig`, the configured token **overrides** a per-call `Authorization` header. With `ApiKeysConfig`, an `api-key` header is **always** sent, even an empty one. So a refreshing token cannot be attached through today's generated connectors without changing them or bypassing them. | [`headers/main.bal`](entra-auth-experiments/headers/main.bal); http `auth_client_bearer_token_auth_handler.bal:34` (`setHeader` overwrites) |
+| A8 | `ai:ModelProvider.generate` is dependently typed and implemented as `external` in every provider. A pure-Ballerina wrapper that delegates to an inner provider does not compile (`a function with a non-'external' function body cannot be a dependently-typed function`). Users therefore can't fix auth by wrapping a provider. | ai `model-provider.bal:117-133`; [`dtcheck/main.bal`](entra-auth-experiments/dtcheck/main.bal) |
+
+### 3.2 `ballerina/http` and `ballerina/oauth2`
+
+| # | Fact | Source |
+|---|---|---|
+| H1 | `http:ClientAuthConfig = CredentialsConfig\|BearerTokenConfig\|JwtIssuerConfig\|OAuth2GrantConfig`. It is closed: there is **no custom token-provider / custom handler hook**. The internal `ClientAuthHandler` union is non-public, and `enrichRequest` panics on any other type. | http `auth_types.bal:97,100`; `http_secure_client.bal:232,238-254` |
+| H2 | When `auth` is set, `Authorization` is computed **per request**, on every remote method. OAuth2 calls `generateToken()` each time and serves it from cache. | `http_secure_client.bal:55-160`; `auth_client_oauth2_handler.bal:36-38` |
+| H3 | OAuth2 grants supported: client_credentials, password, refresh_token, jwt-bearer. | oauth2 `client_oauth2_provider.bal:155,227-237` |
+| H4 | `ClientOAuth2Provider.init` **fetches a token eagerly and panics on failure**. `http:Client\|error c = new (...)` does not catch it (experiment E9: process exits with the error, stack through `ClientOAuth2Provider:init`). | `client_oauth2_provider.bal:201-209`; [`panictest/main.bal`](entra-auth-experiments/panictest/main.bal) |
+| H5 | The token cache refreshes at `expires_in - clockSkew`, and `clockSkew` **defaults to 0** (no early refresh). The refresh is single-flight under `lock`: in E5, 20 concurrent calls after expiry made 1 token fetch. | `client_oauth2_provider.bal:40,246-254,683-692`; [`authexp/main.bal`](entra-auth-experiments/authexp/main.bal) E4/E5 |
+| H6 | The client-credentials grant **requires a non-empty `clientSecret`**. It sends it as Basic auth (default) or in the body; client authentication can't be turned off. Values are not URL-encoded. | `client_oauth2_provider.bal:315-317,569-615`; `oauth2_commons.bal:73-76`; E2, E8 |
+| H7 | `optionalParams` can inject `client_assertion` / `client_assertion_type` (E1). But the config is `cloneReadOnly()` at init, so the assertion is **frozen**: it can't be re-signed or re-read from a rotating file. The dummy secret is still sent alongside it. | `client_oauth2_provider.bal:202`; E1, E5 |
+| H8 | The JWT-bearer grant sends `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=…` (RFC 7523 §2.1). That is **not** Entra's client-assertion flow, which is `grant_type=client_credentials` + `client_assertion`. | `client_oauth2_provider.bal:403,412`; E3; [Entra client-creds flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow) |
+| H9 | There is no 401 handling. A 401 is returned as-is; `retryConfig.statusCodes:[401]` re-sends the same cached token. | E6, E7; `http_client_endpoint.bal:648-661` |
+| H10 | `ballerina/jwt` can't build an Entra certificate assertion. The header supports only `alg/typ/cty/kid` (no `x5t#S256`), and the only algorithms are RS/HS (no PS256). `crypto:signRsaSsaPss256` exists, so it is buildable by hand. | jwt `jwt_commons.bal:20,64-69`; `jwt_issuer.bal:30-39`; crypto 2.12.2 `sign_verify.bal:94,154` |
+
+### 3.3 Credential sources → can `ballerina/http` + `oauth2` do it?
+
+| Source | Wire protocol | Fits http/oauth2 config? | Why |
+|---|---|---|---|
+| Service principal + client secret | `POST {authority}/{tenant}/oauth2/v2.0/token`, `client_credentials`, `scope=<res>/.default` | **Yes, with caveats** | `OAuth2ClientCredentialsGrantConfig` works (E1/E2). Caveats: init panics if Entra is unreachable (H4), `clockSkew` must be set (H5), values aren't URL-encoded (H6). |
+| Service principal + certificate | `client_credentials` + `client_assertion` (JWT signed with cert, `x5t#S256`) | **No (custom)** | A fresh signed assertion is needed per fetch, but `optionalParams` is frozen (H7), a dummy secret is forced (H6), and jwt can't set `x5t` (H10). |
+| Workload identity (AKS, federated) | `client_credentials` + `client_assertion` = `AZURE_FEDERATED_TOKEN_FILE` contents | **No (custom, small)** | The file rotates, so it must be re-read per fetch; `optionalParams` is frozen (H7); a dummy secret is forced (H6). |
+| Managed identity, IMDS | `GET 169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=…`, `Metadata: true` | **No (custom)** | It is a GET with a custom header, not an OAuth2 token request (oauth2 only POSTs: `OAuth2Client.java:314,324`). |
+| Managed identity, App Service-style (App Service, Container Apps, **Foundry hosted agents**) | `GET {IDENTITY_ENDPOINT}?api-version=2019-08-01&resource=…[&client_id=…]`, `X-IDENTITY-HEADER` | **No (custom)** | Same as IMDS. `expires_on` is an epoch **string**; oauth2's parser expects an int `expires_in` (`client_oauth2_provider.bal:636-642`). |
+| Azure CLI (developer machine) | subprocess `az account get-access-token --output json --resource <res> [--tenant …]` | **No (custom)** | It is a process call, not HTTP. |
+| Static token / user-supplied provider | — | Static: **yes** (`BearerTokenConfig`). Provider: **no** | No callback hook (H1). |
+
+Conclusion: only the client-secret path is pure configuration, and even that has the init-panic caveat. Every
+other source needs a small token-credential object (get token → cache → refresh) and a way to attach its token per
+request.
+
+### 3.4 How Microsoft's azure-identity behaves (the reference we compare against)
+
+| # | Fact | Source |
+|---|---|---|
+| M1 | `DefaultAzureCredential` order. Python: Environment → WorkloadIdentity → ManagedIdentity → SharedTokenCache (Windows) → VS Code → Azure CLI → PowerShell → azd → Broker (InteractiveBrowser excluded). Java: the same minus SharedTokenCache, plus IntelliJ. | py `_credentials/default.py:263-313`; java `DefaultAzureCredentialBuilder.java:378-394` |
+| M2 | Chain rule: "unavailable" → try the next credential; any other failure → **stop** and raise. Once a credential succeeds, the chain **remembers it**. | py `chained.py:131-159`; java `ChainedTokenCredential.java:129-144,175-189` |
+| M3 | `AZURE_TOKEN_CREDENTIALS=dev\|prod\|<credential name>` narrows the chain. `prod` = Environment, WorkloadIdentity, ManagedIdentity. | py `_internal/utils.py:186-245`; java `DefaultAzureCredentialBuilder.java:329-370` |
+| M4 | EnvironmentCredential: `AZURE_TENANT_ID` + `AZURE_CLIENT_ID` + one of `AZURE_CLIENT_SECRET` / `AZURE_CLIENT_CERTIFICATE_PATH` (+`_PASSWORD`) / `AZURE_USERNAME`+`AZURE_PASSWORD`. `AZURE_AUTHORITY_HOST` overrides `login.microsoftonline.com`. | py `environment.py:63-86`, `_constants.py:47-56` |
+| M5 | Workload identity: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_FEDERATED_TOKEN_FILE`. Python re-reads the file at most every 600 s; Java re-reads it on every assertion. | py `workload_identity.py:41-46,93-95`; java `WorkloadIdentityCredential.java:146-165` |
+| M6 | Managed identity source detection, in order: Service Fabric (`IDENTITY_SERVER_THUMBPRINT`) → App Service (`IDENTITY_ENDPOINT`+`IDENTITY_HEADER`) → Arc → Azure ML (`MSI_ENDPOINT`+`MSI_SECRET`) → Cloud Shell (`MSI_ENDPOINT`) → IMDS. The resource is the scope minus `/.default`, and exactly one scope is allowed. | py `managed_identity.py:82-143`, `_internal/__init__.py:26-41` |
+| M7 | IMDS inside a chain is probed once with a 1 s timeout; no response means "unavailable". Standalone, it retries 5× with backoff on 404/410/429/5xx. | py `imds.py:25-56,105-151` |
+| M8 | Caching: refresh when ≤ 300 s remain or at `refresh_on` (= `expires_in/2` when the lifetime is ≥ 2 h). Retry a failed refresh at most every 30 s, and keep serving the still-valid token if a refresh fails. Java's `AccessTokenCache` is single-flight (lock). Python's sync pipeline policy is **not** locked. | py `_constants.py:10-11`, `utils.py:36-66`, `get_token_mixin.py:131-137`; java `AccessTokenCache.java:80-151,260-310` |
+| M9 | Azure CLI: `az account get-access-token --output json --resource <res> [--tenant …]`, 10 s timeout, run with a fixed cwd. The CLI is "unavailable" if `az` isn't found or isn't logged in. It prefers `expires_on` (epoch) over `expiresOn` (local time). | py `azure_cli.py:34-35,177-306` |
+| M10 | Java azure-identity 1.19.0 pulls in `azure-core`, `azure-core-http-netty` (reactor-netty), `msal4j`, `msal4j-persistence-extension` and `jna-platform` at compile scope. | Maven Central `com.azure:azure-identity:1.19.0` POM |
+
+### 3.5 Foundry hosted agents (one environment among many)
+
+| # | Fact | Source |
+|---|---|---|
+| F1 | Each hosted agent gets its own Entra **agent identity**. Code gets tokens from the hosted-agent token service, and Microsoft's guidance is to use `DefaultAzureCredential` / `ManagedIdentityCredential`. The project's managed identity is not available to agent code. | [hosted-agent-token-service](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/hosted-agent-token-service), [agent-identity](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/agent-identity) |
+| F2 | The token service uses **exactly the App Service contract**: `IDENTITY_ENDPOINT`, `IDENTITY_HEADER`, `api-version=2019-08-01`, `resource=` (not `/.default`), optional `client_id`, and a response with `expires_on` as a unix-time string. | same page |
+| F3 | Calling the account endpoint directly needs *Cognitive Services OpenAI User* or *Foundry User* on the agent identity. Inference through the project endpoint is allowed by default. | [hosted-agent-permissions](https://learn.microsoft.com/en-us/azure/foundry/agents/concepts/hosted-agent-permissions) |
+| F4 | So a generic App Service-style managed-identity source covers Foundry hosted agents. **No Foundry-specific code is needed.** | F2 + M6 |
+
+### 3.6 Token audiences (scopes)
+
+| Endpoint | Scope | Source |
+|---|---|---|
+| Azure OpenAI v1 (`…openai.azure.com/openai/v1`, `…services.ai.azure.com/openai/v1`) | `https://ai.azure.com/.default` (v1 page); `https://cognitiveservices.azure.com/.default` (starter kit). Docs show both. | [api-version-lifecycle](https://learn.microsoft.com/en-us/azure/foundry/openai/api-version-lifecycle); [starter kit](https://learn.microsoft.com/en-us/azure/developer/ai/get-started-azure-openai-starter-kit) |
+| Foundry Models | "Tokens must be issued with scope `https://ai.azure.com/.default`" | [configure-entra-id](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/configure-entra-id) |
+| Azure OpenAI legacy (`/openai/deployments/…?api-version=`) | Reference page names no scope; samples use `https://cognitiveservices.azure.com/.default` | [reference](https://learn.microsoft.com/en-us/azure/foundry/openai/reference) |
+| Foundry project endpoint (`…/api/projects/<p>`) | `https://ai.azure.com/.default` | [sdk-overview](https://learn.microsoft.com/en-us/azure/foundry/how-to/develop/sdk-overview) |
+| Claude on Foundry (`…services.ai.azure.com/anthropic/v1/messages`) | `https://ai.azure.com/.default`, `Authorization: Bearer`. Key auth uses `x-api-key`. | [use-foundry-models-claude](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-claude); [Anthropic: Claude in Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry) |
+| Azure AI Search data plane | `https://search.azure.com/.default`. The service must have RBAC enabled ("Role-based access control" or "Both"); the default is keys only. | [search-security-enable-roles](https://learn.microsoft.com/en-us/azure/search/search-security-enable-roles) |
+| Sovereign clouds | Authority `login.microsoftonline.us` / `login.chinacloudapi.cn`; Gov AOAI uses `https://cognitiveservices.azure.us/.default` | py `_constants.py:34-36`; Azure Government docs |
+
+### 3.7 Existing Ballerina building blocks
+
+| # | Fact | Source |
+|---|---|---|
+| B1 | No Azure identity / credential package exists on Ballerina Central (`azure.identity`, `azure_identity`, `azure.auth`, `entra`, `microsoft.entra`: 404). `ballerinax/azure.ad` is a Microsoft Graph user/group connector. | Central registry API, `bal search` |
+| B2 | No Azure connector supports Entra or managed identity today. keyvault takes a static `BearerTokenConfig`; storage takes keys or SAS; cosmosdb takes a key or resource token; asb takes a SAS connection string; search takes an api-key header. | see the cross-provider appendix |
+| B3 | **Precedent:** `ballerinax/aws` 1.1.0 ships `aws.auth`: `AuthConfig = Static\|Profile\|AssumeRole\|WebIdentity\|Sso\|Process\|DEFAULT_CREDENTIALS` plus an isolated `CredentialProvider` (Java AWS SDK v2 underneath, cached and refreshed). `ai.aws.bedrock` consumes it through a union-typed `auth` param. | `ballerinax/aws` 1.1.0 `modules/aws.auth/types.bal:19-37`, `credential_provider.bal:17-59`; bedrock `types.bal:25-34` |
+| B4 | ballerina/ai has no shared model-provider auth abstraction. The only `auth` in ai types is for MCP/tools (`http:ClientAuthConfig\|AgentIdAuthConfig`). | ai `types.bal:173,200,223` |
+
+### 3.8 Open questions
+
+| # | Question | How to verify | Blocks |
+|---|---|---|---|
+| Q1 | Is `https://ai.azure.com/.default` accepted on the **legacy** `/openai/deployments` route, and `cognitiveservices` on the project / Claude endpoints? | Read-only calls with tokens for each resource (`az account get-access-token --resource …`) against an existing deployment. **Needs Azure; ask first.** | Default scope per endpoint |
+| Q2 | Does Azure OpenAI / APIM reject a request that carries an **empty `api-key` header** next to a valid Bearer token (A7 shape)? | One read-only call. **Needs Azure; ask first.** | Whether ai.azure can reuse today's generated connectors unchanged |
+| Q3 | Does the Foundry token service ever return `expires_in` / `refresh_in`, or set other identity env vars? | Log env var **names** and response **keys** (never values) in a test agent | Parser robustness (we already accept both) |
+| Q4 | `FOUNDRY_AGENT_INSTANCE_CLIENT_ID` (used by identity.bal, taken from Microsoft Agent Framework samples) is not in the Learn docs. Is passing it as `client_id` required, or is the default identity always the instance? | Compare token `oid`/`appid` claims with and without `client_id` (decode locally, don't log the token) | Whether the MI source needs a Foundry-specific env var at all |
+| Q5 | Does Entra accept `client_assertion` sent alongside a dummy `client_secret` / Basic header? | Sandbox tenant curl | Only matters if we tried to reuse oauth2 for assertions (we don't propose that) |
+| Q6 | RS256 + `x5t` vs PS256 + `x5t#S256` for certificate assertions: the Learn docs contradict each other. | Sandbox tenant | Certificate credential (later phase) |
+| Q7 | Does `DEFAULT_CREDENTIALS` in `ballerinax/aws` cover the AgentCore runtime role / EKS Pod Identity? | Read AWS SDK 2.41.30 `DefaultCredentialsProvider`; test in AgentCore | Cross-provider note only |
+| Q8 | Gov/China equivalent of `ai.azure.com` | Azure Government Foundry docs | Sovereign-cloud defaults |
+
+## 4. Options and recommendation
+
+_Checkpoint (c)._
+
+## 5. API design
+
+_Checkpoint (d)._
+
+## 6. Credential flows
+
+_Checkpoint (d)._
+
+## 7. Cross-provider notes
+
+_Checkpoint (d)._
+
+## 8. Security, testing, compatibility, rollout
+
+_Checkpoint (d)._
+
+## 9. What `hr_agent/identity.bal` becomes
+
+_Checkpoint (d)._
