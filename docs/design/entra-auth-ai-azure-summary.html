@@ -1,0 +1,287 @@
+<title>Keyless Auth for ai.azure</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one projector-width reading column; sections separated by space and a thin rule, tables full width. */
+:root {
+  --bg: #ffffff;
+  --fg: #16202c;
+  --muted: #4c5a6b;
+  --line: #d9e1ea;
+  --tint: #f2f6fa;
+  --accent: #0a5bb5;
+  --accent-soft: #e6f0fb;
+  --code-bg: #f6f8fb;
+  --tok-kw: #8a2a8f;
+  --tok-str: #0e7a3c;
+  --tok-com: #6b7785;
+  --tok-type: #0a5bb5;
+  --tok-num: #b45309;
+  --font-ui: "Public Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --step-0: clamp(17px, 1.1vw + 10px, 21px);
+  --step-1: calc(var(--step-0) * 1.25);
+  --step-2: calc(var(--step-0) * 1.6);
+  --step-3: calc(var(--step-0) * 2.2);
+  color-scheme: light;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--font-ui); font-size: var(--step-0); line-height: 1.55; }
+.page {
+  max-width: 1180px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 48px 72px;
+  display: grid; gap: 56px;
+}
+header { display: grid; gap: 12px; }
+.eyebrow { font-size: calc(var(--step-0) * 0.78); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+h1 { font-size: var(--step-3); line-height: 1.12; font-weight: 800; margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h2 { font-size: var(--step-2); line-height: 1.2; font-weight: 700; margin: 0; text-wrap: balance; }
+.lede { color: var(--muted); margin: 0; max-width: 60ch; }
+section { display: grid; gap: 20px; padding-top: 32px; border-top: 1px solid var(--line); min-width: 0; }
+p { margin: 0; max-width: 70ch; }
+ul.points { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: 72ch; }
+.callout { background: var(--tint); border-left: 4px solid var(--accent); padding: 18px 22px; border-radius: 0 6px 6px 0; max-width: 80ch; }
+.callout strong { color: var(--fg); }
+code { font-family: var(--font-mono); font-size: 0.88em; background: var(--accent-soft); padding: 0.08em 0.35em; border-radius: 4px; }
+pre.code { margin: 0; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px; padding: 20px 24px; overflow-x: auto; font-family: var(--font-mono); font-size: calc(var(--step-0) * 0.82); line-height: 1.6; }
+pre.code code { background: none; padding: 0; font-size: inherit; }
+.label { font-size: calc(var(--step-0) * 0.78); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.code-group { display: grid; gap: 10px; min-width: 0; }
+.tok-kw { color: var(--tok-kw); font-weight: 600; }
+.tok-str { color: var(--tok-str); }
+.tok-com { color: var(--tok-com); font-style: italic; }
+.tok-type { color: var(--tok-type); }
+.tok-num { color: var(--tok-num); }
+.diagram { background: var(--tint); border: 1px solid var(--line); border-radius: 8px; padding: 24px; overflow-x: auto; }
+.diagram pre.mermaid { margin: 0; background: none; font-size: var(--step-0); text-align: center; color: var(--fg); }
+.diagram svg text, .diagram svg .nodeLabel, .diagram svg .edgeLabel, .diagram svg .cluster-label { fill: var(--fg) !important; color: var(--fg) !important; }
+h3.sub { margin: 8px 0 0; font-size: var(--step-1); font-weight: 700; }
+.examples { background: var(--accent-soft); padding: 14px 18px; border-radius: 6px; max-width: 80ch; }
+.table-wrap { overflow-x: auto; min-width: 0; }
+table { width: 100%; border-collapse: collapse; font-size: calc(var(--step-0) * 0.92); }
+th, td { text-align: left; vertical-align: top; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+th { font-size: calc(var(--step-0) * 0.78); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 600; border-bottom: 2px solid var(--fg); }
+td:first-child { font-weight: 600; }
+tbody tr:nth-child(even) td { background: var(--tint); }
+.phase { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 20px; }
+.phase > div { border: 1px solid var(--line); border-radius: 8px; padding: 20px 24px; display: grid; gap: 12px; align-content: start; min-width: 0; }
+.phase h3 { margin: 0; font-size: var(--step-1); }
+.phase ul { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; }
+ol.steps { margin: 0; padding-left: 1.4em; display: grid; gap: 10px; max-width: 75ch; }
+ol.steps li::marker { color: var(--accent); font-weight: 700; }
+a { color: var(--accent); }
+a:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<main class="page">
+  <header>
+    <div class="eyebrow">Design summary · ballerinax/ai.azure</div>
+    <h1>Keyless (Entra ID) auth for <code>ai.azure</code></h1>
+    <p class="lede">A 10-minute walkthrough. Full design, sources and proofs: <code>docs/design/entra-auth-ai-azure.md</code>.</p>
+  </header>
+
+  <section>
+    <h2>Problem</h2>
+    <ul class="points">
+      <li><code>ai.azure</code> only sends a static <code>api-key</code>. Teams that disable keys or use managed identity can't use it.</li>
+      <li><code>http:Client</code> has no token-provider hook, and a provider can't be wrapped in Ballerina. So every app ends up hand-rolling token code.</li>
+      <li>Python and Java users write <code>DefaultAzureCredential()</code>.</li>
+    </ul>
+    <div class="callout"><strong>Today's workaround</strong> (<code>hr_agent/identity.bal</code>, ~190 lines): fetch a managed-identity token, cache it, and run a local proxy on <code>127.0.0.1:8089</code>. The proxy swaps the fake <code>api-key</code> for <code>Authorization: Bearer</code>. It works, but every agent needs its own copy.</div>
+  </section>
+
+  <section>
+    <h2>Before / after</h2>
+    <div class="diagram">
+<pre class="mermaid">
+%%{init: {"theme": "base", "themeVariables": {"background": "#f2f6fa", "primaryColor": "#ffffff", "primaryTextColor": "#16202c", "primaryBorderColor": "#0a5bb5", "lineColor": "#4c5a6b", "textColor": "#16202c", "edgeLabelBackground": "#f2f6fa", "clusterBkg": "#ffffff", "clusterBorder": "#d9e1ea", "fontSize": "18px", "fontFamily": "Public Sans, Segoe UI, sans-serif"}}}%%
+flowchart LR
+    subgraph Before
+        A1[Ballerina app] -->|api-key: placeholder| P[local proxy<br/>identity.bal, per app]
+        P -->|token| MI1[(managed identity)]
+        P -->|Bearer| S1[Azure OpenAI]
+    end
+    subgraph After
+        A2[Ballerina app] --> AZ[ai.azure provider]
+        AZ -->|getToken| ID[ai.azure.identity<br/>credential + cache]
+        ID -->|MI / WI / SP / CLI| E[(Entra ID)]
+        AZ -->|Bearer per request| S2[Azure OpenAI / Foundry / AI Search]
+    end
+</pre>
+    </div>
+  </section>
+
+  <section>
+    <h2>How it looks</h2>
+    <div class="code-group">
+      <div class="label">Ballerina</div>
+<pre class="code"><code data-lang="bal">import ballerinax/ai.azure;
+import ballerinax/ai.azure.identity;
+
+// Keyless, default chain: Azure CLI on a laptop, managed / workload identity when deployed
+final azure:OpenAiModelProvider m1 = check new (url, {'type: "default"}, "gpt-5.5");
+
+// Explicit user-assigned managed identity
+final azure:OpenAiModelProvider m2 = check new (url, {'type: "managedIdentity", clientId: miClientId}, "gpt-5.5");
+
+// API key still works, unchanged
+final azure:OpenAiModelProvider m3 = check new (url, apiKey, "gpt-5.5");
+
+// Or one configurable for both: key or keyless, chosen per environment
+configurable string|identity:CredentialConfig modelAuth = {'type: "default"};</code></pre>
+    </div>
+    <div class="code-group">
+      <div class="label">Config.toml</div>
+<pre class="code"><code data-lang="toml"># Config.toml
+[myorg.myapp]
+modelAuth = {type = "managedIdentity"}      # or {type = "azureCli"}, or "&lt;api key&gt;"</code></pre>
+    </div>
+    <p>In WSO2 Integrator the "Authentication" field offers <strong>Text</strong> (key), <strong>Record</strong> (a <em>Type</em> dropdown) or <strong>Expression</strong>.</p>
+  </section>
+
+  <section>
+    <h2>Credential types explained</h2>
+    <h3 class="sub">What each credential means</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Config <code>type</code></th><th>What it is</th><th>Where you use it</th><th>What it needs</th><th>Secret stored?</th></tr></thead>
+        <tbody>
+          <tr><td><code>default</code></td><td>Not a credential itself: <strong>tries the sources below in order</strong> and uses the first that works</td><td>Same code on a laptop and in Azure</td><td>Nothing, or env vars</td><td>Depends on the source found</td></tr>
+          <tr><td><code>clientSecret</code> (service principal)</td><td>An <strong>app registered in Entra ID</strong> that logs in with its own ID + secret (OAuth2 client credentials)</td><td>On-prem servers, other clouds, CI pipelines</td><td>tenant ID, client ID, client secret</td><td>Yes</td></tr>
+          <tr><td><code>workloadIdentity</code></td><td>A <strong>Kubernetes pod trusted by Entra ID</strong>. Kubernetes gives the pod a token file, which is exchanged for an Entra token</td><td>AKS (or any Kubernetes federated with Entra)</td><td>tenant ID, client ID, token file path (set by AKS)</td><td>No</td></tr>
+          <tr><td><code>managedIdentity</code></td><td>An identity <strong>Azure itself gives to a resource</strong>. The app asks a local endpoint on the machine for a token</td><td>Azure VMs, Container Apps, App Service, <strong>Foundry hosted agents</strong></td><td>Nothing (optional <code>clientId</code> to pick a user-assigned identity)</td><td>No</td></tr>
+          <tr><td><code>azureCli</code></td><td>Reuses the developer's <strong><code>az login</code></strong> session</td><td>Developer laptops only</td><td>Azure CLI installed and logged in</td><td>No (the CLI holds the login)</td></tr>
+          <tr><td><code>staticToken</code></td><td>A token you already have; used as-is, no refresh</td><td>Tests, or tokens from another system</td><td>The token</td><td>Yes (short-lived)</td></tr>
+          <tr><td>your own <code>TokenCredential</code></td><td>Your own object that returns tokens</td><td>Special cases</td><td>Your code</td><td>Up to you</td></tr>
+          <tr><td><code>clientCertificate</code> (phase 2)</td><td>A service principal that proves itself with a <strong>certificate</strong> instead of a secret</td><td>Like <code>clientSecret</code>, but more secure</td><td>tenant ID, client ID, certificate</td><td>Yes (the certificate)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 class="sub">How the <code>default</code> chain works</h3>
+    <div class="diagram">
+<pre class="mermaid">
+%%{init: {"theme": "base", "themeVariables": {"background": "#f2f6fa", "primaryColor": "#ffffff", "primaryTextColor": "#16202c", "primaryBorderColor": "#0a5bb5", "lineColor": "#4c5a6b", "textColor": "#16202c", "edgeLabelBackground": "#f2f6fa", "fontSize": "18px", "fontFamily": "Public Sans, Segoe UI, sans-serif"}}}%%
+flowchart TD
+    S([default]) --> E{Service principal env vars set?<br/>AZURE_TENANT_ID + AZURE_CLIENT_ID + AZURE_CLIENT_SECRET}
+    E -->|yes| E1[use clientSecret]
+    E -->|no| W{Workload identity env vars set?<br/>AZURE_FEDERATED_TOKEN_FILE}
+    W -->|yes| W1[use workloadIdentity]
+    W -->|no| M{Managed identity endpoint available?<br/>Foundry / App Service / Container Apps / VM}
+    M -->|yes| M1[use managedIdentity]
+    M -->|no| C{Azure CLI logged in?}
+    C -->|yes| C1[use azureCli]
+    C -->|no| X[error: no credential found]
+</pre>
+    </div>
+    <p>Rules (same as Microsoft's DefaultAzureCredential):</p>
+    <ul class="points">
+      <li><strong>Not available</strong> (e.g. env vars missing) → try the next one.</li>
+      <li><strong>Available but fails</strong> (e.g. wrong secret) → stop with that error. Don't silently fall through.</li>
+      <li>Once one works, <strong>remember it</strong> for later calls.</li>
+    </ul>
+    <p class="examples">Examples: on your laptop → Azure CLI. In a Foundry hosted agent → managed identity. On AKS → workload identity. On an on-prem server with the 3 env vars → service principal.</p>
+  </section>
+
+  <section>
+    <h2>Key decisions</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Decision</th><th>Choice</th><th>Why</th></tr></thead>
+        <tbody>
+          <tr><td>Where the code lives</td><td><strong>Submodule <code>ai.azure.identity</code></strong> inside <code>ai.azure</code>, extract-ready</td><td>Fastest to ship; same pattern as <code>azure.storage.blob</code>; no new package to own. Ballerina-only public types, so it can be moved later.</td></tr>
+          <tr><td>Token engine</td><td><strong>Java <code>azure-identity</code></strong>, the same jar set <code>azure.storage.blob</code> ships, <strong>with TLS/proxy wired in</strong></td><td>Microsoft-maintained protocols and full <code>DefaultAzureCredential</code> behaviour. Local proofs pass: <code>SSL_CERT_FILE</code> trust works <em>only</em> when wired, and it coexists cleanly with <code>ballerina/http</code>.</td></tr>
+          <tr><td>Attaching the token</td><td><code>Authorization: Bearer</code> <strong>per request</strong> on plain HTTP clients</td><td>Works today; <code>ballerina/http</code> has no token-provider hook, and the generated connectors only take static tokens</td></tr>
+          <tr><td>API shape</td><td><strong>Widen the existing <code>apiKey</code> param</strong>: <code>string|CredentialConfig|TokenCredential</code></td><td>Non-breaking (minor release); Integrator generates positional code</td></tr>
+          <tr><td>Config format</td><td>Records with a required <strong><code>type</code></strong> field</td><td>Config.toml picks the <em>first</em> matching union member, so without <code>type</code> <code>{}</code> becomes the wrong credential</td></tr>
+          <tr><td>Token scope</td><td><strong>Derived from the URL</strong>, overridable</td><td>Project endpoint accepts only <code>ai.azure.com</code> (tested); Search uses <code>search.azure.com</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Credential sources</h2>
+    <div class="phase">
+      <div>
+        <h3>Phase 1</h3>
+        <ul>
+          <li>Default chain (env → workload identity → managed identity → Azure CLI)</li>
+          <li>Managed identity: App Service style (<strong>Foundry hosted agents</strong>, Container Apps) and IMDS (VMs, AKS)</li>
+          <li>Workload identity (AKS) · service principal with secret · Azure CLI · static token · your own <code>TokenCredential</code></li>
+        </ul>
+      </div>
+      <div>
+        <h3>Phase 2</h3>
+        <ul>
+          <li>Client <strong>certificate</strong> (slot reserved now, non-breaking)</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Open for discussion</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Topic</th><th>Question</th></tr></thead>
+        <tbody>
+          <tr><td>Shared <code>ballerinax/azure.identity</code> package</td><td>Should identity eventually be one package for all Azure connectors (as Microsoft and <code>aws.auth</code> do), with <code>azure.storage.*</code> converging on it?</td></tr>
+          <tr><td><code>apiKey</code> naming</td><td><code>apiKey = &lt;credential&gt;</code> reads oddly. Rename to <code>auth</code> at the next major, or pick another shape?</td></tr>
+          <tr><td>GraalVM (Pc)</td><td>The native build of the Java proof is <strong>pending verification</strong></td></tr>
+          <tr><td>Q1b</td><td>Does a classic <code>kind: OpenAI</code> resource accept <code>ai.azure.com</code> tokens? (Default stays <code>cognitiveservices</code> until known)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>Next steps</h2>
+    <ol class="steps">
+      <li>Review this with the AI team (and the storage owners for jar alignment).</li>
+      <li>File the upstream issue in <code>ballerina-library</code> (<code>module/ai.azure</code>).</li>
+      <li>Ship <code>ai.azure</code> 1.6.0: the <code>ai.azure.identity</code> submodule plus widened auth params.</li>
+      <li>Delete <code>identity.bal</code> from agents like <code>hr_agent</code>, and set <code>modelAuth</code> in Config.toml.</li>
+    </ol>
+  </section>
+</main>
+
+<script>
+// Small highlighter for the two code blocks (Ballerina and TOML); no common library ships a Ballerina grammar.
+(function () {
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const rules = {
+    bal: [
+      ["tok-com", /\/\/[^\n]*/y],
+      ["tok-str", /"(?:[^"\\\n]|\\.)*"/y],
+      ["tok-kw", /\b(?:import|final|check|new|configurable|string|isolated|function|returns|public|type|record|object|class)\b/y],
+      ["tok-type", /\b[a-z]+:[A-Z][A-Za-z]*\b|\bballerinax\/[a-z.]+/y],
+      ["tok-num", /\b\d+(?:\.\d+)?\b/y]
+    ],
+    toml: [
+      ["tok-com", /#[^\n]*/y],
+      ["tok-str", /"(?:[^"\\\n]|\\.)*"/y],
+      ["tok-type", /^\[[^\]\n]+\]/my],
+      ["tok-kw", /\b[A-Za-z_][\w-]*(?=\s*=)/y]
+    ]
+  };
+  document.querySelectorAll("pre.code code[data-lang]").forEach(el => {
+    const src = el.textContent, rs = rules[el.dataset.lang] || [];
+    let out = "", i = 0, plain = "";
+    while (i < src.length) {
+      let hit = null;
+      for (const [cls, re] of rs) {
+        re.lastIndex = i;
+        const m = re.exec(src);
+        if (m && m.index === i && m[0].length) { hit = [cls, m[0]]; break; }
+      }
+      if (hit) { out += esc(plain) + '<span class="' + hit[0] + '">' + esc(hit[1]) + "</span>"; plain = ""; i += hit[1].length; }
+      else { plain += src[i]; i++; }
+    }
+    el.innerHTML = out + esc(plain);
+  });
+})();
+</script>

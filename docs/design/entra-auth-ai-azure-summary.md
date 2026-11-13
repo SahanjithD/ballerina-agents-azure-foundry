@@ -58,6 +58,45 @@ modelAuth = {type = "managedIdentity"}      # or {type = "azureCli"}, or "<api k
 In WSO2 Integrator the "Authentication" field offers **Text** (key), **Record** (a *Type* dropdown) or
 **Expression**.
 
+## Credential types explained
+
+### What each credential means
+
+| Config `type` | What it is | Where you use it | What it needs | Secret stored? |
+|---|---|---|---|---|
+| `default` | Not a credential itself: **tries the sources below in order** and uses the first that works | Same code on a laptop and in Azure | Nothing, or env vars | Depends on the source found |
+| `clientSecret` (service principal) | An **app registered in Entra ID** that logs in with its own ID + secret (OAuth2 client credentials) | On-prem servers, other clouds, CI pipelines | tenant ID, client ID, client secret | Yes |
+| `workloadIdentity` | A **Kubernetes pod trusted by Entra ID**. Kubernetes gives the pod a token file, which is exchanged for an Entra token | AKS (or any Kubernetes federated with Entra) | tenant ID, client ID, token file path (set by AKS) | No |
+| `managedIdentity` | An identity **Azure itself gives to a resource**. The app asks a local endpoint on the machine for a token | Azure VMs, Container Apps, App Service, **Foundry hosted agents** | Nothing (optional `clientId` to pick a user-assigned identity) | No |
+| `azureCli` | Reuses the developer's **`az login`** session | Developer laptops only | Azure CLI installed and logged in | No (the CLI holds the login) |
+| `staticToken` | A token you already have; used as-is, no refresh | Tests, or tokens from another system | The token | Yes (short-lived) |
+| your own `TokenCredential` | Your own object that returns tokens | Special cases | Your code | Up to you |
+| `clientCertificate` (phase 2) | A service principal that proves itself with a **certificate** instead of a secret | Like `clientSecret`, but more secure | tenant ID, client ID, certificate | Yes (the certificate) |
+
+### How the `default` chain works
+
+```mermaid
+flowchart TD
+    S([default]) --> E{Service principal env vars set?<br/>AZURE_TENANT_ID + AZURE_CLIENT_ID + AZURE_CLIENT_SECRET}
+    E -->|yes| E1[use clientSecret]
+    E -->|no| W{Workload identity env vars set?<br/>AZURE_FEDERATED_TOKEN_FILE}
+    W -->|yes| W1[use workloadIdentity]
+    W -->|no| M{Managed identity endpoint available?<br/>Foundry / App Service / Container Apps / VM}
+    M -->|yes| M1[use managedIdentity]
+    M -->|no| C{Azure CLI logged in?}
+    C -->|yes| C1[use azureCli]
+    C -->|no| X[error: no credential found]
+```
+
+Rules (same as Microsoft's DefaultAzureCredential):
+
+- **Not available** (e.g. env vars missing) → try the next one.
+- **Available but fails** (e.g. wrong secret) → stop with that error. Don't silently fall through.
+- Once one works, **remember it** for later calls.
+
+Examples: on your laptop → Azure CLI. In a Foundry hosted agent → managed identity. On AKS → workload identity.
+On an on-prem server with the 3 env vars → service principal.
+
 ## Key decisions
 
 | Decision | Choice | Why |
