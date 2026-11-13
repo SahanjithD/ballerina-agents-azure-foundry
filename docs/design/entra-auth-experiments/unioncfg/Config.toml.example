@@ -1,0 +1,7 @@
+[exp.unioncfg]
+a1 = {}
+a2 = {clientId = "x"}
+a3 = {tenantId = "t"}
+a4 = "DEFAULT_CREDENTIAL"
+b1 = {type = "azureCli"}
+b2 = {type = "managedIdentity", clientId = "x"}
