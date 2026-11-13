@@ -1,6 +1,6 @@
 # Design: Microsoft Entra ID (keyless) authentication for `ballerinax/ai.azure`
 
-**Status:** draft for review: research, requirements, options and design complete (Pc GraalVM result pending)
+**Status:** draft for review: research, requirements, options and design complete. Pc (GraalVM) pending.
 **Audience:** Ballerina AI team (ballerina/ai and ballerinax/ai.* maintainers)
 
 <!-- Sections 1, 2 and 4–9 are filled in at later checkpoints. -->
@@ -11,11 +11,13 @@
 Foundry or AI Search writes its own token plumbing. This repo's `identity.bal` is a ~190-line token fetcher plus a
 local proxy that swaps headers. We propose:
 
-- **A new package `ballerinax/azure.identity`.** Its public API is plain Ballerina: discriminated config records
+- **An identity submodule inside `ai.azure`: `ballerinax/ai.azure.identity`.** This follows
+  `azure.storage.blob`'s in-connector approach. Its public API is plain Ballerina: discriminated config records
   for Config.toml and WSO2 Integrator, plus a `TokenCredential` object type. It is backed by Microsoft's Java
-  `azure-identity` (as `azure.storage.blob` already is), and the TLS/proxy settings are wired through, so
-  `DefaultAzureCredential` semantics work on Foundry hosted agents, Azure compute, AKS, on-prem service principals
-  and developer machines.
+  `azure-identity` with the TLS/proxy settings wired through, so `DefaultAzureCredential` semantics work on Foundry
+  hosted agents, Azure compute, AKS, on-prem service principals and developer machines. The module is
+  **extract-ready**: no AI-specific fields and no Java types in its API, so it can later move into a shared
+  `ballerinax/azure.identity` package (§4.9, open for discussion).
 - **A non-breaking widening of `ai.azure`'s auth parameter.** It becomes `string|CredentialConfig|TokenCredential`.
   `ai.azure` attaches `Authorization: Bearer` per request and derives the token scope from the endpoint URL.
 
@@ -30,7 +32,7 @@ flowchart LR
     end
     subgraph After
         A2[Ballerina app] --> AZ[ai.azure provider]
-        AZ -->|getToken scope| ID[azure.identity<br/>TokenCredential + cache]
+        AZ -->|getToken scope| ID[ai.azure.identity submodule<br/>TokenCredential + cache]
         ID -->|MI / WI / SP / CLI| E[(Entra ID / token service)]
         AZ -->|Authorization: Bearer| S2[Azure OpenAI / Foundry / AI Search]
     end
@@ -301,30 +303,29 @@ The design has four independent decisions (axes). Each is compared on its own, t
 
 ### 4.2 Axis L — where the credential lives
 
-| | L1: inside `ai.azure` | L2: module in an umbrella package, `ballerinax/azure` → module `azure.identity` (the `aws`/`aws.auth` layout) | L3: separate package `ballerinax/azure.identity` |
+| | L1: inside `ai.azure`, as an extract-ready submodule `ai.azure.identity` | L2: module in an umbrella package, `ballerinax/azure` → module `azure.identity` (the `aws`/`aws.auth` layout) | L3: separate package `ballerinax/azure.identity` |
 |---|---|---|---|
-| Reuse by other Azure connectors (FR11) | ✗ (they would have to depend on an AI package) | ✓ | ✓ |
+| Reuse by other Azure connectors (FR11) | ~ not directly; possible later by extracting the module (§4.9) | ✓ | ✓ |
 | Matches Microsoft | ✗ | ~ (separate from service SDKs ✓, but packaged with other shared code) | ✓ (`azure-identity` is its own package; the `TokenCredential` interface sits in `azure-core`, java `TokenCredential.java:86`, py `credentials.py:72`, and every service SDK accepts any implementation) |
 | Matches `ballerinax/aws` | ✗ | ✓ (package `aws` holds shared types such as `Region`; module `aws.auth` holds credentials) | ~ (separate from service connectors ✓, different packaging) |
 | Release coupling | Tied to `ai.azure` releases | Own cadence | Own cadence |
-| User import line | `ballerinax/ai.azure` | `import ballerinax/azure.identity;` | `import ballerinax/azure.identity;` (**identical**) |
+| User import line | `import ballerinax/ai.azure.identity;` | `import ballerinax/ai.azure.identity;` | `import ballerinax/ai.azure.identity;` (**identical**) |
 | Name free on Central | n/a | `ballerinax/azure`: free (404) | `ballerinax/azure.identity`: free (404) |
-| Delivery cost (EC9) | Lowest: one repo | New repo + `ai.azure` | New repo + `ai.azure` |
+| Delivery cost (EC9) | **Lowest:** one repo, one release, follows the team's existing in-connector pattern (`azure.storage.blob`, B9) | New repo + `ai.azure` | New repo + `ai.azure` |
 
-**Should we follow the separation?** Yes. Microsoft and `ballerinax/aws` both keep identity out of the service
-SDKs, for the same reason that applies here: one credential, configured once, should work for every Azure client
-in an app (FR9, FR11). Putting it inside `ai.azure` (L1) would make Key Vault or Storage depend on an AI package
-later, or would force a second copy.
+**Recommend L1: an extract-ready submodule `ai.azure.identity` inside `ai.azure`.**
 
-**L2 vs L3** is a packaging choice; user code is the same. **Recommend L3** (`ballerinax/azure.identity`):
+- **Fastest to ship:** one repo and one release, with no new package to create, own or version.
+- **Follows the existing team pattern:** `azure.storage.blob`/`.files` keep their Entra code inside the connector
+  (B9).
+- **Extract-ready by construction:** the module has no AI-specific fields (no deployment, model or service URL in
+  credential types) and only Ballerina types in its public API (discriminated config records plus the
+  `TokenCredential` object type). Moving it later into a shared package is mechanical. `ai.azure.identity` can then
+  re-export the shared types as aliases (`public type TokenCredential identity:TokenCredential;`), so user code
+  keeps compiling.
 
-- It is a 1:1 name match with Microsoft's package.
-- Azure has no shared types that need an umbrella. `aws` has `Region` and `EndpointConfig`; Azure would only have
-  the cloud authority hosts, which fit in the identity package.
-- It avoids putting a new root package `ballerinax/azure` in front of ~15 existing `ballerinax/azure.*` package
-  names. Whether that causes resolution ambiguity is unverified: **Q9**.
-
-If the library team prefers the `aws` layout for symmetry, L2 is acceptable and users are unaffected.
+The shared-package options (L2/L3) and the storage alignment plan are kept, with their reasons, in **§4.9 Open for
+discussion**.
 
 ### 4.3 Axis I — how tokens are acquired: pure Ballerina vs Java interop
 
@@ -347,26 +348,14 @@ proofs (a) TLS-from-`SSL_CERT_FILE` and (b) coexistence with `ballerina/http` pa
 **Proof outcome:** (a) passes **when the HTTP client is wired** (Pa2), and (b) passes with the aligned jar set (Pb1).
 **Recommendation: I2, Java interop**, under three conditions that become requirements:
 
-1. **TLS/proxy wiring is mandatory.** `azure.identity` builds an azure-core `HttpClient` from Ballerina
+1. **TLS/proxy wiring is mandatory.** The identity module builds an azure-core `HttpClient` from Ballerina
    `secureSocket`/`proxy` settings and passes it to *every* credential builder. This fixes B11 for storage too.
-2. **One owner for the Azure Java stack.** `azure.identity` pins `azure-core`, `azure-identity`, msal4j, Reactor
-   and Jackson, with Netty locked to `ballerina/http`'s version. Other Azure Java connectors converge on the same
-   pins over time (alignment below), so apps don't hit Pb3-style "older core wins".
+2. **Curated, aligned jar set.** `ai.azure` pins the same `azure-core`/`azure-identity`/msal4j/Reactor/Jackson
+   versions as `azure.storage.blob`, with Netty locked to `ballerina/http`'s version (Pb1), so apps that use both
+   don't hit Pb3-style "older core wins". Long-term single ownership of these pins is part of §4.9.
 3. **The public API stays implementation-agnostic** (§5): Ballerina records plus a Ballerina `TokenCredential`
    object type, with no Java types in the API. So I1 remains a drop-in fallback (for example if GraalVM or a jar
    conflict blocks a user), and the choice is reversible.
-
-**Alignment story for `azure.storage.*`.** Recommendation: **`azure.identity` offers both, and storage converges
-on it.**
-
-| Step | `azure.identity` | `azure.storage.blob` / `.files` |
-|---|---|---|
-| Now | Ships the Ballerina API (records + `TokenCredential`) backed by Java azure-identity, plus a **native bridge** so Java-SDK connectors can get a `com.azure.core.credential.TokenCredential` for any Ballerina credential (wrapping user-defined Ballerina credentials too) | Unchanged |
-| Next minor | — | Keeps its own `EntraIdConfig` records (non-breaking) but builds credentials **through `azure.identity`'s native bridge**: one jar set, TLS wiring fixed (B11), and one cache |
-| Next major | — | Its `AuthConfig` accepts `azure.identity:CredentialConfig\|azure.identity:TokenCredential` directly, and drops its private Entra records (blob and files differ today, B9) |
-
-Keeping two independent copies (storage's and identity's) is the worst option: two jar sets that drift apart
-(Pb3) and two config shapes for one concept.
 
 ### 4.4 Axis T — how `ai.azure` attaches the token
 
@@ -452,7 +441,7 @@ discriminator because its union has no `string` member and few all-optional reco
 Certificate support is added in phase 2 without breaking phase-1 code, by making every extension point additive:
 
 ```ballerina
-// azure.identity, phase 1
+// ai.azure.identity, phase 1
 public type ClientSecretConfig record {|
     "clientSecret" 'type;              // discriminator (§4.5): required, so Config.toml/literals are unambiguous
     string tenantId;
@@ -480,7 +469,7 @@ public type CredentialConfig DefaultCredentialConfig|ManagedIdentityConfig|Workl
 Rules that keep it non-breaking:
 
 1. **Unions are inputs only.** Adding a member to a union that users *construct* never breaks them. Only code
-   that exhaustively `match`es on it would break, and that code lives inside `azure.identity`.
+   that exhaustively `match`es on it would break, and that code lives inside the identity module.
    Because every member has a distinct `type`, a new member can't capture Config.toml values meant for an
    existing one (B7).
 2. **Records are closed, and new fields always get defaults.** That is how `sendCertificateChain` can arrive later.
@@ -511,18 +500,60 @@ table of URLs.
 
 | Axis | Choice |
 |---|---|
-| L: where | **L3**: new package `ballerinax/azure.identity` (L2 acceptable) |
+| L: where | **L1**: extract-ready submodule `ai.azure.identity` inside `ai.azure`; a shared package is open for discussion (§4.9) |
 | I: how tokens are acquired | **I2**: Java `azure-identity` interop (proofs a+b pass), with mandatory TLS wiring and one owner for the Azure jar set; API kept implementation-agnostic so I1 stays a fallback |
 | T: how they are attached | **T2a**: per-call header on raw clients; propose T1 to the http team separately |
 | S: API shape | **S1**: widen the second parameter's type, keep its name (rename at the next major); credential configs carry a `type` discriminator |
 | Certificates | phase 2, with the slots reserved as in §4.6 |
 | Scope | derived from the URL, overridable (§4.7) |
 
+### 4.9 Open for discussion: a shared `ballerinax/azure.identity` package (future option)
+
+This is not the recommendation for the first release. It is kept here because the reasons for it are real.
+
+**Why a shared package could be the right end state.** Microsoft and `ballerinax/aws` both keep identity out of
+the service SDKs: `azure-identity` is shared by every Azure client, and the `TokenCredential` interface sits in
+`azure-core` (java `TokenCredential.java:86`, py `credentials.py:72`). `aws.auth` is shared by the AWS connectors.
+One credential, configured once, would then work for every Azure client in an app (FR9, FR11). It would also give
+**one owner for the Azure Java jar set**, which avoids Pb3-style conflicts across connectors.
+
+**Previous analysis (L1 vs L2 vs L3):** Yes. Microsoft and `ballerinax/aws` both keep identity out of the service
+SDKs, for the same reason that applies here: one credential, configured once, should work for every Azure client
+in an app (FR9, FR11). Putting it inside `ai.azure` (L1) would make Key Vault or Storage depend on an AI package
+later, or would force a second copy.
+
+**L2 vs L3** is a packaging choice; user code is the same. **If a shared package is adopted, prefer L3** (`ballerinax/azure.identity`):
+
+- It is a 1:1 name match with Microsoft's package.
+- Azure has no shared types that need an umbrella. `aws` has `Region` and `EndpointConfig`; Azure would only have
+  the cloud authority hosts, which fit in the identity package.
+- It avoids putting a new root package `ballerinax/azure` in front of ~15 existing `ballerinax/azure.*` package
+  names. Whether that causes resolution ambiguity is unverified: **Q9**.
+
+If the library team prefers the `aws` layout for symmetry, L2 is acceptable and users are unaffected.
+
+
+**Storage alignment plan (if a shared package is adopted):** **`azure.identity` offers both, and storage converges
+on it.**
+
+| Step | `azure.identity` | `azure.storage.blob` / `.files` |
+|---|---|---|
+| Now | Ships the Ballerina API (records + `TokenCredential`) backed by Java azure-identity, plus a **native bridge** so Java-SDK connectors can get a `com.azure.core.credential.TokenCredential` for any Ballerina credential (wrapping user-defined Ballerina credentials too) | Unchanged |
+| Next minor | — | Keeps its own `EntraIdConfig` records (non-breaking) but builds credentials **through `azure.identity`'s native bridge**: one jar set, TLS wiring fixed (B11), and one cache |
+| Next major | — | Its `AuthConfig` accepts `azure.identity:CredentialConfig\|azure.identity:TokenCredential` directly, and drops its private Entra records (blob and files differ today, B9) |
+
+Keeping two independent copies (storage's and identity's) is the worst option: two jar sets that drift apart
+(Pb3) and two config shapes for one concept.
+
+
+**Trigger to revisit:** a second Azure connector (for example Key Vault or Search) needs Entra, or apps start
+combining `ai.azure` with `azure.storage.*` and hit jar-version drift.
+
 ## 5. API design
 
 Everything below is a **sketch for review**, not an implementation. Names are open to the team's conventions.
 
-### 5.1 `ballerinax/azure.identity`: implementation-agnostic public API
+### 5.1 Module `ai.azure.identity` (inside `ballerinax/ai.azure`): implementation-agnostic, extract-ready public API
 
 No Java types appear in the public API, so the Java backend (§4.3) can be swapped for pure Ballerina without
 breaking users.
@@ -593,12 +624,12 @@ public isolated function fromConfig(CredentialConfig config, *CredentialOptions 
   `refreshOn`; retry a failed refresh at most every 30 s; keep serving a still-valid token (NF2, M8). This is the
   same in every backend, and it also covers sources that don't cache (for example the CLI).
 - A native bridge exposes `com.azure.core.credential.TokenCredential` for Java-SDK connectors (storage), including
-  an adapter for user-written Ballerina credentials (§4.3 alignment).
+  an adapter for user-written Ballerina credentials. This is only needed if the shared-package option (§4.9) is adopted.
 
 ### 5.2 `ballerinax/ai.azure`: what changes
 
 ```ballerina
-import ballerinax/azure.identity;
+import ballerinax/ai.azure.identity;
 
 public type Auth string|identity:CredentialConfig|identity:TokenCredential;
 
@@ -622,7 +653,7 @@ public isolated function init(@display {label: "Service URL"} string serviceUrl,
 
 ```ballerina
 import ballerinax/ai.azure;
-import ballerinax/azure.identity;
+import ballerinax/ai.azure.identity;
 
 // 1. Unchanged: API key
 final azure:OpenAiModelProvider m1 = check new (url, apiKey, "gpt-5.5");
@@ -685,7 +716,7 @@ this work.
 sequenceDiagram
     participant App as Ballerina agent
     participant AI as ai.azure provider
-    participant Cred as azure.identity (DefaultAzureCredential)
+    participant Cred as ai.azure.identity (DefaultAzureCredential)
     participant TS as Foundry token service (IDENTITY_ENDPOINT)
     participant AOAI as Azure OpenAI / Foundry
     App->>AI: chat(...)
@@ -708,7 +739,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant AI as ai.azure provider
-    participant Cred as azure.identity (DefaultAzureCredential)
+    participant Cred as ai.azure.identity (DefaultAzureCredential)
     participant IMDS as IMDS 169.254.169.254
     participant CLI as az CLI
     AI->>Cred: getToken([scope])
@@ -726,7 +757,7 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant AI as ai.azure provider
-    participant Cred as azure.identity (ClientSecretCredential)
+    participant Cred as ai.azure.identity (ClientSecretCredential)
     participant Entra as login.microsoftonline.com/{tenant}
     AI->>Cred: getToken([scope])
     Cred->>Entra: POST /oauth2/v2.0/token  grant_type=client_credentials, scope=…/.default (via proxy/secureSocket)
@@ -753,7 +784,7 @@ specific).
 
 **Where the attach layer belongs.** A cloud-neutral "give me a bearer token" hook is the long-term home, either
 `http:BearerTokenProviderConfig` (T1, proposed to the http team) or a structural object type in `ballerina/ai`.
-Because Ballerina object types are structural, `azure.identity` can offer
+Because Ballerina object types are structural, the identity module can offer
 `identity:bearerTokenProvider(cred, scope)`, the equivalent of Python's `get_bearer_token_provider`, which
 satisfies such a hook without a package dependency. This design doesn't need that hook for Azure (T2a works today).
 
@@ -789,23 +820,26 @@ satisfies such a hook without a package dependency. This design doesn't need tha
 |---|---|
 | `ai.azure`: second parameter widened from `string` to `Auth` | No: positional, named and Integrator code all compile (B6) |
 | `ai.azure`: `ConnectionConfig.tokenScope?` added | No |
-| `ai.azure`: `azure.identity` dependency adds **~10.6 MB of jars for every user**, including API-key-only users (Ballerina has no optional dependencies) | Not an API break, but a real cost to call out in review |
-| `azure.identity`: union members added later (certificate) | No (§4.6) |
+| `ai.azure`: the identity module's Java jars add **~10.6 MB for every user**, including API-key-only users (Ballerina has no optional dependencies) | Not an API break, but a real cost to call out in review |
+| `ai.azure.identity`: union members added later (certificate) | No (§4.6) |
+| Later extraction to a shared package (§4.9) | No, if `ai.azure.identity` re-exports the shared types as aliases |
 | Rename `apiKey` → `auth` | **Yes**: only at the next `ai.azure` major (§4.5) |
 
 ### 8.4 Rollout and upstream path
 
-1. **Issue** in `ballerina-platform/ballerina-library` (`module/ai.azure`, `module/azure.identity`), linking this
-   doc. Ask for a design review with the AI team **and the storage connector owners** (jar-set ownership,
-   alignment).
-2. **`ballerinax/azure.identity` 1.0.0**, a new repo. Seeded from storage's `Credentials.java` and jar set, plus
-   the TLS wiring, the Ballerina cache, the native bridge, tests and a GraalVM workflow.
-3. **`ballerinax/ai.azure` 1.6.0**: widened params, raw clients with per-call Bearer (T2a), scope derivation,
-   `tokenScope`, docs and `@display` labels. Non-breaking.
-4. **`azure.storage.blob` / `.files` next minor**: build credentials through `azure.identity` (fixes B11, one jar
-   set).
-5. **Later:** the `ai.azure` 2.0 rename (`auth`); storage's major accepts identity types; propose T1 to the http
-   team; certificate credential (phase 2, if not already free through Java).
+1. **Issue** in `ballerina-platform/ballerina-library` (`module/ai.azure`), linking this doc. Design review with
+   the AI team; invite the storage connector owners for the jar-set alignment and §4.9.
+2. **`ballerinax/ai.azure` 1.6.0** (non-breaking):
+   - **new submodule `ai.azure.identity`:** seeded from storage's `Credentials.java` and jar set, plus the TLS
+     wiring, the Ballerina-side cache and tests (mocks, concurrency, fake CA), with a `bal test --graalvm` workflow;
+   - **provider changes:** widened auth params, raw clients with per-call Bearer (T2a), scope derivation and
+     `tokenScope`;
+   - **docs and labels:** `@display` labels and a Foundry / AKS / local-dev guide.
+3. **Later:**
+   - decide §4.9 (shared package and storage alignment);
+   - the `ai.azure` 2.0 rename (`apiKey` → `auth`);
+   - propose T1 (a token-provider auth type) to the http team;
+   - certificate credential (phase 2).
 
 ## 9. What `hr_agent/identity.bal` becomes
 
@@ -814,7 +848,7 @@ URL helpers). `agent.bal` shrinks to:
 
 ```ballerina
 import ballerinax/ai.azure;
-import ballerinax/azure.identity;
+import ballerinax/ai.azure.identity;
 
 // Key or keyless, chosen in Config.toml. Foundry: managed identity; laptop: Azure CLI.
 configurable string|identity:CredentialConfig modelAuth = {'type: "default"};
