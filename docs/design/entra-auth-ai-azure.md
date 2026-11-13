@@ -1,13 +1,40 @@
 # Design: Microsoft Entra ID (keyless) authentication for `ballerinax/ai.azure`
 
-**Status:** draft, in progress (research, requirements and options done; final design to follow)
+**Status:** draft for review: research, requirements, options and design complete (Pc GraalVM result pending)
 **Audience:** Ballerina AI team (ballerina/ai and ballerinax/ai.* maintainers)
 
 <!-- Sections 1, 2 and 4–9 are filled in at later checkpoints. -->
 
 ## 1. Summary
 
-_To be written after the design is agreed._
+`ballerinax/ai.azure` only supports API keys, so every Ballerina app that wants keyless access to Azure OpenAI,
+Foundry or AI Search writes its own token plumbing. This repo's `identity.bal` is a ~190-line token fetcher plus a
+local proxy that swaps headers. We propose:
+
+- **A new package `ballerinax/azure.identity`.** Its public API is plain Ballerina: discriminated config records
+  for Config.toml and WSO2 Integrator, plus a `TokenCredential` object type. It is backed by Microsoft's Java
+  `azure-identity` (as `azure.storage.blob` already is), and the TLS/proxy settings are wired through, so
+  `DefaultAzureCredential` semantics work on Foundry hosted agents, Azure compute, AKS, on-prem service principals
+  and developer machines.
+- **A non-breaking widening of `ai.azure`'s auth parameter.** It becomes `string|CredentialConfig|TokenCredential`.
+  `ai.azure` attaches `Authorization: Bearer` per request and derives the token scope from the endpoint URL.
+
+Local proofs back the key claims (§3.9). Live checks covered only Q1/Q2 (§3.6): which scopes each endpoint accepts.
+
+```mermaid
+flowchart LR
+    subgraph Before
+        A1[Ballerina app] -->|api-key: placeholder| P[local proxy :8089<br/>identity.bal, per app]
+        P -->|GET token| MI1[(managed identity endpoint)]
+        P -->|Authorization: Bearer| S1[Azure OpenAI]
+    end
+    subgraph After
+        A2[Ballerina app] --> AZ[ai.azure provider]
+        AZ -->|getToken scope| ID[azure.identity<br/>TokenCredential + cache]
+        ID -->|MI / WI / SP / CLI| E[(Entra ID / token service)]
+        AZ -->|Authorization: Bearer| S2[Azure OpenAI / Foundry / AI Search]
+    end
+```
 
 ## 2. Problem and requirements
 
@@ -59,7 +86,7 @@ Python and Java users write `DefaultAzureCredential()`.
 ### 2.4 Out of scope (v1)
 
 - Interactive or user-delegated flows: browser, device code, username/password, on-behalf-of.
-- IDE and other CLI credentials: VS Code, IntelliJ, PowerShell, azd, the WAM broker, and the shared token cache.
+- *Building or testing* IDE and other CLI credentials (VS Code, IntelliJ, PowerShell, azd, the WAM broker, the shared token cache). With the Java option (§4.3) they come with `DefaultAzureCredential` as-is, but this design doesn't promise or test them.
 - Managed-identity flavours with tiny reach: Service Fabric, Azure Arc, Azure ML, Cloud Shell. Arc may be revisited for on-prem.
 - Continuous access evaluation (CAE) and claims challenges, and persisting tokens to disk.
 - Changing the other `ai.*` providers. §7 only states what this design means for them.
@@ -185,13 +212,56 @@ This was not tested on a classic `kind: OpenAI` resource or in a sovereign cloud
 | # | Fact | Source |
 |---|---|---|
 | B1 | No Azure identity / credential package exists on Ballerina Central (`azure.identity`, `azure_identity`, `azure.auth`, `entra`, `microsoft.entra`: 404). `ballerinax/azure.ad` is a Microsoft Graph user/group connector. | Central registry API, `bal search` |
-| B2 | No Azure connector supports Entra or managed identity today. keyvault takes a static `BearerTokenConfig`; storage takes keys or SAS; cosmosdb takes a key or resource token; asb takes a SAS connection string; search takes an api-key header. | see the cross-provider appendix |
+| B2 | ~~No Azure connector supports Entra today.~~ **Corrected:** `ballerinax/azure.storage.blob` 1.0.0 (released 2026-10-23) and `azure.storage.files` 1.2.0 (released 2026-10-19) **support Entra ID through Java `azure-identity` interop** (B9). Other Azure connectors use keys, SAS, static bearer tokens or `http` OAuth2 grants (table below). | Central registry API; release tags `v1.0.0` / `v1.2.0`; table below |
 | B3 | **Precedent:** `ballerinax/aws` 1.1.0 ships `aws.auth`: `AuthConfig = Static\|Profile\|AssumeRole\|WebIdentity\|Sso\|Process\|DEFAULT_CREDENTIALS` plus an isolated `CredentialProvider` (Java AWS SDK v2 underneath, cached and refreshed). `ai.aws.bedrock` consumes it through a union-typed `auth` param. | `ballerinax/aws` 1.1.0 `modules/aws.auth/types.bal:19-37`, `credential_provider.bal:17-59`; bedrock `types.bal:25-34` |
 | B4 | ballerina/ai has no shared model-provider auth abstraction. The only `auth` in ai types is for MCP/tools (`http:ClientAuthConfig\|AgentIdAuthConfig`). | ai `types.bal:173,200,223` |
 | B5 | WSO2 Integrator renders a union-typed parameter as several input modes: all record members merged into one **record form with a "Type" dropdown** (one sub-form per record), string constants as a **select**, `string` as **text**, plus **expression**. Example: Vertex's `OAuth2RefreshConfig\|ServiceAccountConfig\|string` → `[RECORD_MAP_EXPRESSION{2 records}, TEXT, EXPRESSION]`. Labels come from `@display`; `*ConnectionConfig` fields are flattened into "advanced" fields. | ballerina-platform/ballerina-vscode `4352694`, `packages/ballerina-language-server/flow-model-generator/.../core/model/Property.java:792-890`, `ModelProviderBuilder.java:131-191`; UI `ballerina-visualizer/.../RecordConfigModal.tsx:768-774`; test `node_template/config/function_call-user-union2.json` |
 | B6 | Integrator's model-provider picker is not hard-coded: it lists `ballerinax/ai.*` packages that depend on `ballerina/ai` and carry the "Model Provider" keyword, and treats a class as a model provider if it includes `ai:ModelProvider`. **Generated code passes required params positionally** (`check new ("url", "key", "deployment-id", "api-version")`). Defaultable params are positional until one is skipped; included-record fields are named. So renaming the required `apiKey` param doesn't break Integrator-generated code, but changing its position does. No test resource covers `ai.aws.bedrock`; Integrator generates no configurables automatically. | `AiUtils.java:174-175,720-732,1185-1215`; `SourceBuilder.java:811-900`; fixture `source/model_provider/connections.bal:10` |
 | B7 | Union-of-records `configurable` values are supported, but Config.toml has **no discriminator: the first union member that fits wins**. `a = {}` resolved to the first all-optional record (managed identity, not CLI). In code, the literal `{}` against the same union is a **compile error ("ambiguous type")**. With a required singleton field (`type = "azureCli"`) both resolve unambiguously. `aws.auth` has no discriminator, and its `ProfileAuthConfig` (all fields defaulted) matches `{}`. | [`unioncfg/`](entra-auth-experiments/unioncfg/); runtime `TomlProvider.java:634-656`, `TypeConverter.java:372-412` (ballerina-lang `ef5de61`) |
 | B8 | Bedrock labels the param `@display {label: "Authentication"}`, but neither `BearerToken` nor the `aws.auth` records have `@display` on their fields (Integrator shows title-cased field names). Its README shows only Ballerina literals, with no Config.toml example. | bedrock `provider_runtime_amazon.bal:48`, `types.bal:25-34`, `README.md:90-105`; `aws` 1.1.0 `aws.auth/types.bal` |
+| B9 | **In-house precedent, `azure.storage.blob` 1.0.0 / `azure.storage.files` 1.2.0.** `AuthConfig = SharedKey\|Sas\|SasUrl\|ConnectionString\|EntraIdConfig`.<br>• blob: `EntraIdConfig = EntraIdChainConfig{kind: DEFAULT_AZURE_CREDENTIAL\|MANAGED_IDENTITY}\|ClientSecretConfig\|ClientCertificateConfig\|WorkloadIdentityConfig`. files uses the same idea with two records (`DefaultEntraIdConfig`, `ManagedIdentityConfig`), each with a `kind` singleton, so **the two siblings already differ in shape**.<br>• Every Entra record also carries `accountName` / `serviceUrl` (service-specific). The variant is picked **by which fields are present** (secret → certificate → token file → `kind`).<br>• Native `Credentials.entraCredential` maps to `ClientSecret`/`ClientCertificate`/`WorkloadIdentity`/`ManagedIdentity`/`DefaultAzureCredentialBuilder`.<br>• There is no Azure CLI-only option, no static token, and no user-supplied credential object. | blob `ballerina/types.bal:60-135`, `native/.../util/Credentials.java:348-396`; files `ballerina/types.bal:523-612` |
+| B10 | **How storage handled the jar clashes: by curation.** It lists 43 jars explicitly: `azure-identity` 1.18.4, `azure-core` 1.58.1, `azure-core-http-netty` 1.16.5, msal4j 1.23.1 (+ persistence extension and JNA), Reactor, Jackson 2.18.7, and **every Netty jar pinned to 4.2.18.Final, the version `ballerina/http` ships** (not the 4.2.19 the Azure BOM would bring). The bala is 43 jars / 17.2 MB. `graalvmCompatible = true`, and a `bal test --graalvm` workflow exists. Entra is covered only by gated *live* client-secret tests; there are no repo tests for managed identity, workload identity or the default chain. | blob `ballerina/Ballerina.toml:14-240`; `.github/workflows/build-with-bal-test-native.yml`; `tests/advanced_tests.bal:481-489` |
+| B11 | **Storage's TLS/proxy config does not reach its credentials.** `secureSocket`/`proxy` are mapped to a Netty `HttpClient` for the *service* client (`ClientInit.java:146-147`, `TransportConfigMapper.java:157-253`), but `entraCredential` builds every credential **without `.httpClient(...)`**. So token requests use azure-identity's default client and the JVM truststore. azure-core's default client reads `HTTPS_PROXY` only if `java.net.useSystemProxies=true`. | `Credentials.java:353-396`; azure-core `ProxyOptions.java:258` |
+
+#### Azure connectors' auth today (released versions on Central)
+
+| Package (latest on Central) | Auth today | Entra / managed identity? | Source (released bala) |
+|---|---|---|---|
+| `azure.storage.blob` 1.0.0, `azure.storage.files` 1.2.0 | shared key, SAS, SAS URL, connection string, **Entra** (default chain, MI, client secret, certificate, workload identity) | ✓ via Java `azure-identity` 1.18.4 | B9 |
+| `azure_storage_service` 4.4.0 | access key or SAS (`auth` typed `never`) | ✗ | `modules/blobs/types.bal:24-34` |
+| `azure.keyvault` 1.6.1 | `http:BearerTokenConfig` (static token; no refresh) | static token only | `types.bal:24` |
+| `azure.datalake` 2.0.0 | `OAuth2ClientCredentialsGrantConfig\|http:BearerTokenConfig\|OAuth2RefreshTokenGrantConfig` | client secret via `http` OAuth2 (with the init-panic caveat, H4) or a static token | `types.bal:362` |
+| `azure.ad` 2.5.0 (Microsoft Graph users/groups) | `http:BearerTokenConfig\|OAuth2RefreshTokenGrantConfig` | static token or refresh token | `types.bal:25` |
+| `azure_cosmosdb` 4.5.0 | `primaryKeyOrResourceToken` (Java Cosmos SDK, `azure-core` 1.59.1) | ✗ | `types.bal:25-33` |
+| `azure_eventhub` 3.1.0 | SAS key name and key, signed in Ballerina (`auth` typed `never`) | ✗ | `types.bal:23-31` |
+| `azure.textanalytics` 1.5.2 | `ApiKeysConfig` → `Ocp-Apim-Subscription-Key` header | ✗ | `client.bal:24-33`, `types.bal:79` |
+| `asb` 3.10.1 | SAS connection string (Java Service Bus SDK, `azure-core` 1.54.1) | ✗ | `types.bal:128,218` |
+| `azure.openai.*`, `azure.ai.search*`, `ai.azure` 1.5.1 | api-key (static `BearerTokenConfig` allowed on generated `azure.openai.*`) | ✗ | §3.1 |
+
+Repo `main` branches are ahead of Central for several of these (keyvault 2.0.0, textanalytics 2.0.0, a renamed
+`azure.eventhub` 4.0.0), with the same auth shapes. Two unreleased AI loaders, `ai.azure.storage.blobs` /
+`.files` 0.9.0, build on `azure_storage_service`.
+
+### 3.9 Java interop proofs (local, mock endpoints only)
+
+The proof app is a Ballerina program plus a ~60-line Java shim around **the exact jar set `azure.storage.blob`
+1.0.0 ships** (37 identity-related jars). It calls a local HTTPS mock of the Entra token endpoint and of the App
+Service-style managed-identity endpoint. The mock's TLS certificate is signed by a throwaway CA standing in for
+Foundry's TLS-inspecting egress proxy, and `SSL_CERT_FILE` points at a bundle with that CA. Source:
+[`java-identity/`](entra-auth-experiments/java-identity/) (`setup.sh` then `run.sh`).
+
+| # | Proof | Result |
+|---|---|---|
+| Pa1 | azure-identity's **default** HTTP client against the "proxy" CA (client secret via MSAL, and managed identity over HTTPS) | **✗ fails:** `SunCertPathBuilderException: unable to find valid certification path`. Java azure-identity does **not** read `SSL_CERT_FILE`. |
+| Pa2 | Credential builders given `.httpClient(...)`: a Netty client whose `SslContext` trusts the PEM bundle from `SSL_CERT_FILE` | **✓ passes** for both the client secret (MSAL honours the azure-core client) and HTTPS managed identity |
+| Pa3 | `ManagedIdentityCredential` against the App Service contract (= Foundry hosted-agent token service, F2) | **✓:** `GET {IDENTITY_ENDPOINT}?api-version=2019-08-01&resource=…` with `X-IDENTITY-HEADER`, and no `client_id` unless one is configured. Over plain HTTP it works with the default client. |
+| Pb1 | Aligned jar set (Netty 4.2.18 = `ballerina/http`'s) + `ballerina/http` in one app | **✓:** no build warnings. A Ballerina `http:Client` (TLS) and azure-identity's reactor-netty work interleaved in one JVM. |
+| Pb2 | Same, but identity jars on Netty **4.2.19** (what the Azure BOM brings) | ✓ runs. The build prints `Detected conflicting jar files` for every Netty jar and packages **one** copy (http's 4.2.18). |
+| Pb3 | Identity set (`azure-core` 1.58.1, Jackson 2.18.7) + `azure_cosmosdb` 4.5.0 (`azure-core` 1.59.1, Jackson 2.18.11) | ✓ builds with conflict warnings and packages the **older** `azure-core` 1.58.1. Identity works; cosmosdb running on the older core was **not** verified (Q10, partly answered). |
+| Pc | `bal build --graalvm` (GraalVM CE 25.0.5) of the proof app and of a pure-Ballerina control | _pending: filled in below_ |
+
+Weight: the identity set is **37 jars / 15.6 MB**. About 5 MB of it is Netty 4.2.18, identical to the copy
+`ballerina/http` already ships, so the net addition is **~10.6 MB**.
 
 ### 3.8 Open questions
 
@@ -208,7 +278,7 @@ This was not tested on a classic `kind: OpenAI` resource or in a sovereign cloud
 | Q7 | Does `DEFAULT_CREDENTIALS` in `ballerinax/aws` cover the AgentCore runtime role / EKS Pod Identity? | Read AWS SDK 2.41.30 `DefaultCredentialsProvider`; test in AgentCore | Cross-provider note only |
 | Q8 | Gov/China equivalent of `ai.azure.com` | Azure Government Foundry docs | Sovereign-cloud defaults |
 | Q9 | Would a root package `ballerinax/azure` (option L2) make module resolution ambiguous for the existing `ballerinax/azure.*` packages? (`ballerinax/aws` coexists with `aws.s3` and others, which suggests not.) | Publish a test package pair to a local repository and build an app that imports both | L2 only |
-| Q10 | What happens when an app pulls two `azure-core` versions (for example `ai.azure` with I2 plus `asb`)? Does it warn, pick one, or fail at runtime? | `bal build` an app depending on both; inspect the conflict warnings and the executable jar | I2 only |
+| Q10 | Partly answered (Pb2, Pb3): `bal build` warns and packages **one** copy, and not always the newest. Open: do the Java-SDK connectors (`asb`, `cosmosdb`) work at runtime on the `azure-core` version that wins? | Run each connector's tests in an app that also depends on `azure.identity` | Java option: shared jar-set governance |
 | Q11 | Do `azure-identity` + msal4j work under `bal build --graalvm`? | Native-image spike with the slimmed jar set | I2 only |
 
 ## 4. Options and recommendation
@@ -258,26 +328,45 @@ If the library team prefers the `aws` layout for symmetry, L2 is acceptable and 
 
 ### 4.3 Axis I — how tokens are acquired: pure Ballerina vs Java interop
 
-| Criterion | I1: pure Ballerina (`http:Client`, `os:exec`, `crypto`) | I2: Java interop wrapping `azure-identity` (as `aws.auth` wraps AWS SDK v2) |
+This axis is compared against the **real in-house precedent** (`azure.storage.blob`/`.files`, B9–B11) and the
+local proofs (§3.9), not a hypothetical. The decision rule agreed with the requester: **choose Java interop if
+proofs (a) TLS-from-`SSL_CERT_FILE` and (b) coexistence with `ballerina/http` pass; otherwise pure Ballerina.**
+
+| Criterion | I1: pure Ballerina (`http:Client`, `os:exec`, `crypto`) | I2: Java interop wrapping `azure-identity` (as storage does) |
 |---|---|---|
-| EC1 coverage | The sources we choose to write: phase 1 is about 5 (MI ×2, WI, secret, CLI); certificate in phase 2. Exotic sources come only through the user token-provider escape hatch. | **Full `DefaultAzureCredential` parity on day one**, including certificate, Arc, Service Fabric, broker, CAE and MSAL's managed-identity rewrite (M6). |
-| EC2 weight | **0 new jars.** Uses `http`, `crypto`, `os`, `time`, already in the dependency graph. | As published, `azure-identity` 1.19.0 resolves to about **48 jars / ~19 MB**¹: `azure-core`, Jackson, Reactor, **reactor-netty + Netty 4.2.19**, msal4j, JNA. Slimmed (JDK HTTP client instead of Netty, no persistence extension) it is about **15 jars / ~6.5 MB**, comparable to `aws.auth`'s **30 jars / 6.3 MB** (which also avoids Netty by using the Apache HTTP client). |
-| EC2 conflicts | None. | `ballerina/http` ships **Netty 4.2.18**, while `azure-core-http-netty` 1.17 wants 4.2.19 (avoidable by dropping Netty). `asb` 3.10.1 pins `azure-core` 1.54.1 and `azure_cosmosdb` 4.5.0 pins 1.59.1; `azure-identity` 1.19 needs 1.61.0. **An app using `ai.azure` plus `asb` would carry two `azure-core` versions** (Q10). |
-| EC3 GraalVM | Inherits `graalvmCompatible: true` from http, crypto, os and time (verified in their balas). | `asb` and `cosmosdb` declare `graalvmCompatible = true` with `azure-core`, so the core stack can work, but **`azure-identity` + msal4j are untested** under native image (Q11). JNA must be excluded. |
-| EC4 maintenance | **We own the protocols.** They are small and stable: IMDS `2018-02-01`, App Service `2019-08-01`, the Entra v2 token endpoint, the `az` CLI JSON (M6, M9). Estimated ~800–1,200 lines including tests. | **Microsoft owns the protocols**; we own about 15–50 platform jars listed one by one in `Ballerina.toml` (as `asb` lists `azure-core`, `azure-json`, Jackson… explicitly), their version bumps and their CVEs, plus the Java glue (~300–500 lines). The `asb`/`cosmosdb` pins show these bumps lag. |
-| EC5 consistency | Matches `ai.googleapis.vertex`, which signs its service-account JWT in Ballerina (§7). Doesn't match `aws.auth`'s technique. | Matches `aws.auth`. Note that `aws.auth` had a stronger reason: SigV4, STS, SSO and profile parsing are large. Azure's phase-1 sources are a few HTTP GET/POSTs. |
-| EC7 control | **Full.** Token calls use a Ballerina `http:Client` with the same `secureSocket`/`proxy` as the service client, so Foundry's `SSL_CERT_FILE` bundle works the same way it does today (identity.bal). Errors and logs are ours. | The Java stack uses its own HTTP client and the **JVM truststore, which doesn't read `SSL_CERT_FILE`** ([JSSE guide](https://docs.oracle.com/en/java/javase/21/security/java-secure-socket-extension-jsse-reference-guide.html)), so the CA bundle and proxy must be bridged separately. MSAL logs through slf4j. |
-| EC8 testability | Mock services in plain Ballerina tests (same style as `ai.azure`'s `tests/test_services.bal`). | Possible through env overrides (`AZURE_AUTHORITY_HOST`, `IDENTITY_ENDPOINT`), but tests run through a Java stack. |
-| EC9 cost | Medium: we write and test the sources. | Medium: glue plus jar curation plus a GraalVM spike. |
+| EC1 coverage | What we write: about 5 sources in phase 1, certificate in phase 2 | **Full `DefaultAzureCredential` parity on day one**, including certificate, CLI, IDEs, broker and CAE, and Microsoft's managed-identity rewrite onto MSAL (M6). Pa3 confirms the App Service / Foundry contract. |
+| EC2 weight | 0 new jars | **37 jars / 15.6 MB**; net **~10.6 MB** when Netty is aligned with `ballerina/http` (§3.9) |
+| EC2 conflicts | None | **Manageable by curation**, as storage proves: pin Netty to `ballerina/http`'s version (Pb1: clean build). If not curated, the build warns and packages one copy (Pb2), and an older `azure-core` can win over a newer one (Pb3). That requires **one owner for the Azure jar set** (see "alignment" below). |
+| EC3 GraalVM | Inherits `graalvmCompatible` from stdlib | Storage declares `graalvmCompatible = true` and runs a `bal test --graalvm` workflow (B10). Local result: **Pc** in §3.9. |
+| EC4 maintenance | **We own the protocols** (small, stable) | **Microsoft owns the protocols**; we own about 37 pinned jars, bumped in lockstep with `ballerina/http`'s Netty, plus CVE tracking, which storage already does |
+| EC5 consistency | Matches `ai.googleapis.vertex` (Ballerina-signed JWT) | **Matches both in-house Azure precedents** (`azure.storage.blob`, `azure.storage.files`) and `aws.auth`'s technique |
+| EC7 TLS/proxy | Same `http:Client` config as the service | **Works only if wired** (Pa1 ✗ / Pa2 ✓): every credential must get an azure-core `HttpClient` built from the Ballerina `secureSocket`/`proxy`. Storage doesn't do this today (B11), which is a latent Foundry/corporate-proxy bug for SP/WI tokens. |
+| EC8 testability | Ballerina mock services | Same mocks work (§3.9); env overrides (`AZURE_AUTHORITY_HOST`, `IDENTITY_ENDPOINT`) are honoured |
+| EC9 cost | Medium: write about 5 sources | **Lower**: reuse storage's jar set and credential mapping, and add the TLS wiring and a Ballerina-side cache |
 
-¹ Approximate figures from a naive transitive resolution against Maven Central (test-scoped Netty dependencies
-removed). Confirm with `mvn dependency:tree` before a final decision.
+**Proof outcome:** (a) passes **when the HTTP client is wired** (Pa2), and (b) passes with the aligned jar set (Pb1).
+**Recommendation: I2, Java interop**, under three conditions that become requirements:
 
-**Recommend I1 (pure Ballerina).** Phase 1 needs only a handful of small, stable HTTP protocols, and I1 adds no
-jars, has no conflict surface and inherits GraalVM compatibility. Above all, it gives control over TLS/proxy
-(EC7), which is exactly where Foundry's sandbox bit us. I2's real advantage is breadth (EC1). The escape hatch
-(a user-supplied token provider) covers rare sources. **Revisit I2** if the scope grows to the broker,
-interactive login or CAE, where MSAL's value is large.
+1. **TLS/proxy wiring is mandatory.** `azure.identity` builds an azure-core `HttpClient` from Ballerina
+   `secureSocket`/`proxy` settings and passes it to *every* credential builder. This fixes B11 for storage too.
+2. **One owner for the Azure Java stack.** `azure.identity` pins `azure-core`, `azure-identity`, msal4j, Reactor
+   and Jackson, with Netty locked to `ballerina/http`'s version. Other Azure Java connectors converge on the same
+   pins over time (alignment below), so apps don't hit Pb3-style "older core wins".
+3. **The public API stays implementation-agnostic** (§5): Ballerina records plus a Ballerina `TokenCredential`
+   object type, with no Java types in the API. So I1 remains a drop-in fallback (for example if GraalVM or a jar
+   conflict blocks a user), and the choice is reversible.
+
+**Alignment story for `azure.storage.*`.** Recommendation: **`azure.identity` offers both, and storage converges
+on it.**
+
+| Step | `azure.identity` | `azure.storage.blob` / `.files` |
+|---|---|---|
+| Now | Ships the Ballerina API (records + `TokenCredential`) backed by Java azure-identity, plus a **native bridge** so Java-SDK connectors can get a `com.azure.core.credential.TokenCredential` for any Ballerina credential (wrapping user-defined Ballerina credentials too) | Unchanged |
+| Next minor | — | Keeps its own `EntraIdConfig` records (non-breaking) but builds credentials **through `azure.identity`'s native bridge**: one jar set, TLS wiring fixed (B11), and one cache |
+| Next major | — | Its `AuthConfig` accepts `azure.identity:CredentialConfig\|azure.identity:TokenCredential` directly, and drops its private Entra records (blob and files differ today, B9) |
+
+Keeping two independent copies (storage's and identity's) is the worst option: two jar sets that drift apart
+(Pb3) and two config shapes for one concept.
 
 ### 4.4 Axis T — how `ai.azure` attaches the token
 
@@ -325,6 +414,22 @@ config** (Config.toml / Integrator, FR7) or a **credential object** (pro-code, s
 - **S1 is non-breaking (NF10).** Integrator only ever shows the label, so it can say "Authentication".
 - **Rename later.** Rename to `auth` in the next planned major of `ai.azure`, and track it in the rollout (§8).
 - **Why not S3.** It creates two competing auth inputs.
+
+**Open point for the team: `apiKey = <credential>` reads oddly.** S1 is the recommendation because it's the only
+non-breaking option that keeps one auth input. But in pro-code, a named argument `apiKey = credential` looks wrong.
+The alternatives, side by side:
+
+| | Pro-code call | Integrator | Compatibility | Cost |
+|---|---|---|---|---|
+| **S1** keep `apiKey`, widen type | `new (url, credential, "gpt-5.5")` ✓<br>`new (serviceUrl = url, apiKey = credential, …)` reads oddly | label "Authentication": ✓ | ✓ minor | none |
+| **S2** rename to `auth` | `new (url, credential, …)` / `auth = credential` ✓ | ✓ | ✗ breaks `apiKey =` callers, so **major** | major release of `ai.azure` |
+| **S1 → S2** (S1 now, rename in the next planned major) | odd only until the major | ✓ | ✓ now, planned break later | one deprecation note |
+| **S3** separate `auth` in `ConnectionConfig` | `new (url, "", "gpt-5.5", auth = credential)` | two auth inputs | ✓ minor | confusing precedence rules |
+| **S5** new classes (`OpenAiModelProvider` unchanged; e.g. `EntraOpenAiModelProvider`) | `new azure:EntraOpenAiModelProvider(url, credential, …)` | two entries in the picker | ✓ minor | doubles the API surface ×3 classes |
+
+Ballerina has no constructor overloading, and a required parameter can't follow a defaultable one, so a second
+optional parameter named `auth` before `deploymentId` isn't possible. Recommendation stays **S1 → S2**, but this is
+a naming call the team should make in review.
 
 **The plain-data config needs a discriminator (B7).** Each credential record carries a required singleton
 `type` field, for example `{type = "managedIdentity"}`, for three reasons:
@@ -407,7 +512,7 @@ table of URLs.
 | Axis | Choice |
 |---|---|
 | L: where | **L3**: new package `ballerinax/azure.identity` (L2 acceptable) |
-| I: how tokens are acquired | **I1**: pure Ballerina; revisit I2 only if the scope grows to broker/interactive/CAE |
+| I: how tokens are acquired | **I2**: Java `azure-identity` interop (proofs a+b pass), with mandatory TLS wiring and one owner for the Azure jar set; API kept implementation-agnostic so I1 stays a fallback |
 | T: how they are attached | **T2a**: per-call header on raw clients; propose T1 to the http team separately |
 | S: API shape | **S1**: widen the second parameter's type, keep its name (rename at the next major); credential configs carry a `type` discriminator |
 | Certificates | phase 2, with the slots reserved as in §4.6 |
@@ -415,20 +520,324 @@ table of URLs.
 
 ## 5. API design
 
-_Checkpoint (d)._
+Everything below is a **sketch for review**, not an implementation. Names are open to the team's conventions.
+
+### 5.1 `ballerinax/azure.identity`: implementation-agnostic public API
+
+No Java types appear in the public API, so the Java backend (§4.3) can be swapped for pure Ballerina without
+breaking users.
+
+```ballerina
+// ---- the contract every Azure connector depends on ----
+
+# An access token for one audience. Times are epoch seconds.
+public type AccessToken readonly & record {|
+    string token;
+    int expiresOn;
+    int refreshOn?;   // when the source suggests refreshing early (azure-identity's refresh_on)
+|};
+
+# Anything that can produce Entra tokens. Structural: users can write their own (escape hatch, FR3).
+public type TokenCredential isolated object {
+    # Returns a valid token for `scopes`. Implementations cache and refresh (NF2); never panic; never log tokens.
+    isolated function getToken(string[] scopes) returns AccessToken|Error;
+};
+
+// ---- errors (NF4) ----
+public type Error distinct error<ErrorDetail>;
+public type CredentialUnavailableError distinct Error;   // no usable source here (e.g. no IMDS, az not logged in)
+public type AuthenticationError distinct Error;          // a source was found but Entra/MI refused (AADSTS code in detail)
+public type ErrorDetail record {| string credential; string? code = (); |};  // never contains secrets
+
+// ---- plain-data configs (FR7): required `type` discriminator (§4.5, B7) ----
+public type DefaultCredentialConfig record {|
+    "default" 'type;
+    "all"|"prod"|"dev" sources = "all";   // like AZURE_TOKEN_CREDENTIALS (M3)
+    string managedIdentityClientId?;      // default: AZURE_CLIENT_ID, as azure-identity does
+    string tenantId?;
+|};
+public type ManagedIdentityConfig record {| "managedIdentity" 'type; string clientId?; |};
+public type WorkloadIdentityConfig record {|  // defaults come from AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_FEDERATED_TOKEN_FILE
+    "workloadIdentity" 'type; string tenantId?; string clientId?; string tokenFilePath?;
+|};
+public type ClientSecretConfig record {| "clientSecret" 'type; string tenantId; string clientId; string clientSecret; |};
+public type AzureCliConfig record {| "azureCli" 'type; string tenantId?; |};
+public type StaticTokenConfig record {| "staticToken" 'type; string token; |};   // tests / externally managed tokens
+
+public type CredentialConfig DefaultCredentialConfig|ManagedIdentityConfig|WorkloadIdentityConfig
+        |ClientSecretConfig|AzureCliConfig|StaticTokenConfig;   // phase 2: |ClientCertificateConfig (§4.6)
+
+// ---- transport and cloud options shared by all credentials (NF6, FR10) ----
+public type CredentialOptions record {|
+    string authorityHost = AZURE_PUBLIC_CLOUD;   // AZURE_US_GOVERNMENT, AZURE_CHINA, or a URL
+    http:ClientSecureSocket secureSocket?;       // e.g. {cert: os:getEnv("SSL_CERT_FILE")} in Foundry
+    http:ProxyConfig proxy?;
+    decimal timeout = 30;
+|};
+
+# Builds a credential from config. No network I/O here (NF3): the first `getToken` does it.
+public isolated function fromConfig(CredentialConfig config, *CredentialOptions options)
+        returns TokenCredential|Error;
+
+// ---- ready-made classes (pro-code); each implements TokenCredential ----
+// DefaultAzureCredential, ManagedIdentityCredential, WorkloadIdentityCredential, ClientSecretCredential,
+// AzureCliCredential, StaticTokenCredential, ChainedTokenCredential(TokenCredential... sources)
+// phase 2: ClientCertificateCredential
+```
+
+**Inside the package (not public API):**
+
+- Each class wraps a Java `azure-identity` credential, built with an azure-core `HttpClient` made from
+  `secureSocket`/`proxy` (§4.3 condition 1, Pa2).
+- The **cache lives in the Ballerina layer**: per scope set, under `lock`; refresh 300 s before expiry or at
+  `refreshOn`; retry a failed refresh at most every 30 s; keep serving a still-valid token (NF2, M8). This is the
+  same in every backend, and it also covers sources that don't cache (for example the CLI).
+- A native bridge exposes `com.azure.core.credential.TokenCredential` for Java-SDK connectors (storage), including
+  an adapter for user-written Ballerina credentials (§4.3 alignment).
+
+### 5.2 `ballerinax/ai.azure`: what changes
+
+```ballerina
+import ballerinax/azure.identity;
+
+public type Auth string|identity:CredentialConfig|identity:TokenCredential;
+
+public isolated function init(@display {label: "Service URL"} string serviceUrl,
+        @display {label: "Authentication"} Auth apiKey,        // S1: type widened, name kept (§4.5 open point)
+        @display {label: "Deployment ID"} string deploymentId, ...,
+        *ConnectionConfig connectionConfig) returns ai:Error?
+```
+
+- `ConnectionConfig` gains `string tokenScope?` (advanced; it overrides §4.7's URL-derived default).
+- `string` keeps today's behaviour: the value goes in the `api-key` header (FR2).
+- `CredentialConfig` → `identity:fromConfig(cfg, secureSocket = cc.secureSocket, proxy = cc.proxy)`, so token
+  calls inherit the model client's TLS/proxy (NF6).
+- `TokenCredential` is used as-is, so one credential can be shared by the model, embedding and KB (FR9).
+- Per request (T2a): `Authorization: Bearer <cred.getToken([scope]).token>` on a raw `http:Client` with **no**
+  `auth` config. A credential failure becomes `ai:Error("Failed to get an Entra ID token for <scope>", cause)`.
+- The same widening applies to `EmbeddingProvider` (its misnamed `accessToken` param gets the label
+  "Authentication") and to `AiSearchKnowledgeBase` (default scope `https://search.azure.com/.default`).
+
+### 5.3 How users write it (pro-code)
+
+```ballerina
+import ballerinax/ai.azure;
+import ballerinax/azure.identity;
+
+// 1. Unchanged: API key
+final azure:OpenAiModelProvider m1 = check new (url, apiKey, "gpt-5.5");
+
+// 2. "Works here and in Azure": default chain (CLI locally, managed identity / workload identity when deployed)
+final azure:OpenAiModelProvider m2 = check new (url, {'type: "default"}, "gpt-5.5");
+
+// 3. User-assigned managed identity
+final azure:OpenAiModelProvider m3 = check new (url, {'type: "managedIdentity", clientId: miClientId}, "gpt-5.5");
+
+// 4. One shared credential for model + embeddings + search (one cache per scope)
+final identity:TokenCredential cred = check new identity:DefaultAzureCredential();
+final azure:OpenAiModelProvider model = check new (url, cred, "gpt-5.5");
+final azure:EmbeddingProvider embed = check new (url, cred, (), "text-embedding-3-small");
+final azure:AiSearchKnowledgeBase kb = check new (searchUrl, cred, "hr-policies", embed);
+
+// 5. Project endpoint: the scope is derived automatically (ai.azure.com, §4.7)
+final azure:OpenAiModelProvider m5 = check new (projectUrl + "/openai/v1", cred, "gpt-5.5");
+
+// 6. Escape hatch: any isolated object with getToken(string[]) (e.g. a token from a vault or a custom broker)
+isolated class VaultCredential {
+    *identity:TokenCredential;
+    isolated function getToken(string[] scopes) returns identity:AccessToken|identity:Error { ... }
+}
+```
+
+### 5.4 Config.toml and WSO2 Integrator (low-code)
+
+```ballerina
+// config.bal: one configurable covers both key and keyless (verified: unioncfg2)
+configurable string|identity:CredentialConfig modelAuth = {'type: "default"};
+```
+
+```toml
+# Config.toml: pick one
+[myorg.hr_agent]
+modelAuth = {type = "managedIdentity"}                                   # Azure compute / Foundry
+# modelAuth = {type = "azureCli"}                                        # developer machine
+# modelAuth = {type = "clientSecret", tenantId = "…", clientId = "…", clientSecret = "…"}   # keep secrets out of git
+# modelAuth = "<api key>"                                                # unchanged key auth
+```
+
+Verified behaviour (`unioncfg2/`): a TOML string resolves to the API key, a table with `type` to the matching
+record, and an omitted value to the code default.
+
+**WSO2 Integrator** renders the "Authentication" field as **Text** (API key), **Record** (a *Type* dropdown:
+default / managedIdentity / workloadIdentity / clientSecret / azureCli / staticToken, each with its own sub-form),
+or **Expression** (a `TokenCredential` variable or configurable) (B5). Generated code stays positional (B6).
+`@display` labels on every record field are a deliverable; bedrock lacks them (B8).
+
+Secrets: the client secret should come from an environment-specific Config.toml or a secret store, never a
+committed file. Managed identity, workload identity and the CLI need no secrets at all, which is the main point of
+this work.
 
 ## 6. Credential flows
 
-_Checkpoint (d)._
+### 6.1 Foundry hosted agent (managed identity via the token service, F2)
+
+```mermaid
+sequenceDiagram
+    participant App as Ballerina agent
+    participant AI as ai.azure provider
+    participant Cred as azure.identity (DefaultAzureCredential)
+    participant TS as Foundry token service (IDENTITY_ENDPOINT)
+    participant AOAI as Azure OpenAI / Foundry
+    App->>AI: chat(...)
+    AI->>Cred: getToken(["https://cognitiveservices.azure.com/.default"])
+    alt cached and not within 5 min of expiry
+        Cred-->>AI: cached token
+    else refresh (single flight under lock)
+        Note over Cred: Environment: unavailable, Workload identity: unavailable, Managed identity: App Service contract
+        Cred->>TS: GET ?api-version=2019-08-01&resource=…  (X-IDENTITY-HEADER)
+        TS-->>Cred: {access_token, expires_on}
+        Cred-->>AI: token (cached)
+    end
+    AI->>AOAI: POST /openai/v1/chat/completions  Authorization: Bearer …  (TLS via SSL_CERT_FILE bundle)
+    AOAI-->>AI: 200
+    AI-->>App: response
+```
+
+### 6.2 Developer machine (Azure CLI)
+
+```mermaid
+sequenceDiagram
+    participant AI as ai.azure provider
+    participant Cred as azure.identity (DefaultAzureCredential)
+    participant IMDS as IMDS 169.254.169.254
+    participant CLI as az CLI
+    AI->>Cred: getToken([scope])
+    Note over Cred: Environment: no AZURE_CLIENT_SECRET, so unavailable. Workload identity: no token file, so unavailable
+    Cred->>IMDS: probe (short timeout)
+    IMDS--xCred: no response, so unavailable (next)
+    Cred->>CLI: az account get-access-token --resource … --output json
+    CLI-->>Cred: {accessToken, expires_on}
+    Note over Cred: remembers "Azure CLI" for later calls (M2)
+    Cred-->>AI: token (cached)
+```
+
+### 6.3 Service principal (client secret: on-prem, CI, other clouds)
+
+```mermaid
+sequenceDiagram
+    participant AI as ai.azure provider
+    participant Cred as azure.identity (ClientSecretCredential)
+    participant Entra as login.microsoftonline.com/{tenant}
+    AI->>Cred: getToken([scope])
+    Cred->>Entra: POST /oauth2/v2.0/token  grant_type=client_credentials, scope=…/.default (via proxy/secureSocket)
+    alt success
+        Entra-->>Cred: {access_token, expires_in}
+        Cred-->>AI: token (cached)
+    else AADSTS error
+        Entra-->>Cred: 400/401 {error, error_description: AADSTS…}
+        Cred-->>AI: AuthenticationError(credential="ClientSecretCredential", code="AADSTS…")
+    end
+```
 
 ## 7. Cross-provider notes
 
-_Checkpoint (d)._
+Two layers, kept apart: **acquiring** a credential (cloud-specific) and **attaching** it to requests (protocol-
+specific).
+
+| Provider | How it authenticates today (§3, providers report) | What this design means for it |
+|---|---|---|
+| `ai.aws.bedrock` | `aws.auth:AuthConfig\|BearerToken`; full AWS chain via Java AWS SDK v2; SigV4 signed in Ballerina | Already has the acquisition layer (`aws.auth`, the precedent for `azure.identity`). Attaching is SigV4 signing, not a bearer token, so **nothing is shared** with Azure beyond the pattern. Open: AgentCore / Pod Identity coverage (Q7). |
+| `ai.googleapis.vertex` | OAuth2 refresh token, or a service-account key signed in Ballerina; **no ADC / metadata server**; assumes a 3600 s lifetime | Has the same "cloud identity" gap. The analogue would be a Google credential module (ADC: `GOOGLE_APPLICATION_CREDENTIALS`, metadata server, workload identity). **Not in scope**; it would follow this design's shape (records + a credential object). |
+| `ai.anthropic` on Foundry | static `x-api-key`; overridable `serviceUrl`; **closed model enum** | Claude on Foundry accepts Entra Bearer tokens with scope `ai.azure.com` (§3.6). To use them it would need (a) a bearer-token hook and (b) free-form deployment names. It must **not** depend on `azure.identity`; the hook should be a cloud-neutral shape (below). Not in scope. |
+| `ai.openrouter`, `ai.openai`, `ai.mistral`, `ai.deepseek` | static key as Bearer | No cloud identity. Unaffected. |
+
+**Where the attach layer belongs.** A cloud-neutral "give me a bearer token" hook is the long-term home, either
+`http:BearerTokenProviderConfig` (T1, proposed to the http team) or a structural object type in `ballerina/ai`.
+Because Ballerina object types are structural, `azure.identity` can offer
+`identity:bearerTokenProvider(cred, scope)`, the equivalent of Python's `get_bearer_token_provider`, which
+satisfies such a hook without a package dependency. This design doesn't need that hook for Azure (T2a works today).
 
 ## 8. Security, testing, compatibility, rollout
 
-_Checkpoint (d)._
+### 8.1 Security
+
+- **Tokens and secrets never leave memory.** Tokens, client secrets, assertions and `IDENTITY_HEADER` are never
+  logged, put in errors or spans, or written to disk. MSAL PII logging stays off (its default). Errors carry only
+  the credential name and the AADSTS code.
+- **TLS is always wired.** The TLS/proxy settings reach every token request, so tokens are never fetched over a
+  path that skips the configured trust (Pa1/Pa2). Plain-HTTP local metadata endpoints (IMDS, the token service)
+  bypass the proxy.
+- **Least privilege is documented per endpoint.** Cognitive Services OpenAI User / Foundry User for models; Search
+  Index Data Reader/Contributor for KB, with RBAC enabled on Search (§3.6, F3).
+- **`StaticTokenConfig` is labelled "tests or externally managed tokens".** It has no refresh.
+
+### 8.2 Testing (no Azure needed)
+
+| Layer | How |
+|---|---|
+| Each credential | Local mocks of the Entra token endpoint, IMDS, the App Service token service and a fake `az` script, as in §3.9 (`java-identity/`) |
+| TLS | Fake "proxy" CA plus a `secureSocket`/`SSL_CERT_FILE` positive/negative pair (Pa1/Pa2) |
+| Cache | Concurrency test: 50 strands → **1** fetch; expiry → 1 refresh; refresh failure while valid → old token served |
+| Scope derivation | Table-driven unit test over URLs (§4.7) |
+| `ai.azure` | Existing mock-service tests plus a mock credential; assert the `Authorization` header and that no `api-key` is sent |
+| GraalVM | `bal test --graalvm` workflow, as storage has (B10); see Pc |
+| Live (gated) | Client secret in CI (as storage does); a managed-identity job on Container Apps or Foundry, optional |
+
+### 8.3 Compatibility
+
+| Change | Breaking? |
+|---|---|
+| `ai.azure`: second parameter widened from `string` to `Auth` | No: positional, named and Integrator code all compile (B6) |
+| `ai.azure`: `ConnectionConfig.tokenScope?` added | No |
+| `ai.azure`: `azure.identity` dependency adds **~10.6 MB of jars for every user**, including API-key-only users (Ballerina has no optional dependencies) | Not an API break, but a real cost to call out in review |
+| `azure.identity`: union members added later (certificate) | No (§4.6) |
+| Rename `apiKey` → `auth` | **Yes**: only at the next `ai.azure` major (§4.5) |
+
+### 8.4 Rollout and upstream path
+
+1. **Issue** in `ballerina-platform/ballerina-library` (`module/ai.azure`, `module/azure.identity`), linking this
+   doc. Ask for a design review with the AI team **and the storage connector owners** (jar-set ownership,
+   alignment).
+2. **`ballerinax/azure.identity` 1.0.0**, a new repo. Seeded from storage's `Credentials.java` and jar set, plus
+   the TLS wiring, the Ballerina cache, the native bridge, tests and a GraalVM workflow.
+3. **`ballerinax/ai.azure` 1.6.0**: widened params, raw clients with per-call Bearer (T2a), scope derivation,
+   `tokenScope`, docs and `@display` labels. Non-breaking.
+4. **`azure.storage.blob` / `.files` next minor**: build credentials through `azure.identity` (fixes B11, one jar
+   set).
+5. **Later:** the `ai.azure` 2.0 rename (`auth`); storage's major accepts identity types; propose T1 to the http
+   team; certificate credential (phase 2, if not already free through Java).
 
 ## 9. What `hr_agent/identity.bal` becomes
 
-_Checkpoint (d)._
+**It is deleted** (191 lines: the managed-identity client, token cache, response parser, local proxy listener,
+URL helpers). `agent.bal` shrinks to:
+
+```ballerina
+import ballerinax/ai.azure;
+import ballerinax/azure.identity;
+
+// Key or keyless, chosen in Config.toml. Foundry: managed identity; laptop: Azure CLI.
+configurable string|identity:CredentialConfig modelAuth = {'type: "default"};
+
+isolated function createModel() returns azure:OpenAiModelProvider|error {
+    string endpoint = check requiredEnv("AZURE_OPENAI_ENDPOINT");
+    string deployment = check requiredEnv("MODEL_DEPLOYMENT_NAME");
+    // Foundry's egress proxy CA: now also trusted for token requests (ai.azure passes secureSocket to the credential)
+    string caBundle = os:getEnv("SSL_CERT_FILE");
+    if caBundle == "" {
+        return new (endpoint, modelAuth, deployment);
+    }
+    return new (endpoint, modelAuth, deployment, secureSocket = {cert: caBundle});
+}
+```
+
+What goes away:
+
+- the `127.0.0.1:8089` proxy and its listener;
+- `PLACEHOLDER_API_KEY`;
+- forcing `httpVersion = HTTP_1_1` for the hop;
+- the hand-written token cache and parsing.
+
+The `AZURE_OPENAI_KEY` path stays available by setting `modelAuth = "<key>"`. If Q4 shows that
+`FOUNDRY_AGENT_INSTANCE_CLIENT_ID` must be passed, the config becomes
+`{type = "managedIdentity", clientId = "<value>"}` with no code change.
