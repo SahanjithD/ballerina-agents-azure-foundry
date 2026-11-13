@@ -188,6 +188,10 @@ This was not tested on a classic `kind: OpenAI` resource or in a sovereign cloud
 | B2 | No Azure connector supports Entra or managed identity today. keyvault takes a static `BearerTokenConfig`; storage takes keys or SAS; cosmosdb takes a key or resource token; asb takes a SAS connection string; search takes an api-key header. | see the cross-provider appendix |
 | B3 | **Precedent:** `ballerinax/aws` 1.1.0 ships `aws.auth`: `AuthConfig = Static\|Profile\|AssumeRole\|WebIdentity\|Sso\|Process\|DEFAULT_CREDENTIALS` plus an isolated `CredentialProvider` (Java AWS SDK v2 underneath, cached and refreshed). `ai.aws.bedrock` consumes it through a union-typed `auth` param. | `ballerinax/aws` 1.1.0 `modules/aws.auth/types.bal:19-37`, `credential_provider.bal:17-59`; bedrock `types.bal:25-34` |
 | B4 | ballerina/ai has no shared model-provider auth abstraction. The only `auth` in ai types is for MCP/tools (`http:ClientAuthConfig\|AgentIdAuthConfig`). | ai `types.bal:173,200,223` |
+| B5 | WSO2 Integrator renders a union-typed parameter as several input modes: all record members merged into one **record form with a "Type" dropdown** (one sub-form per record), string constants as a **select**, `string` as **text**, plus **expression**. Example: Vertex's `OAuth2RefreshConfig\|ServiceAccountConfig\|string` → `[RECORD_MAP_EXPRESSION{2 records}, TEXT, EXPRESSION]`. Labels come from `@display`; `*ConnectionConfig` fields are flattened into "advanced" fields. | ballerina-platform/ballerina-vscode `4352694`, `packages/ballerina-language-server/flow-model-generator/.../core/model/Property.java:792-890`, `ModelProviderBuilder.java:131-191`; UI `ballerina-visualizer/.../RecordConfigModal.tsx:768-774`; test `node_template/config/function_call-user-union2.json` |
+| B6 | Integrator's model-provider picker is not hard-coded: it lists `ballerinax/ai.*` packages that depend on `ballerina/ai` and carry the "Model Provider" keyword, and treats a class as a model provider if it includes `ai:ModelProvider`. **Generated code passes required params positionally** (`check new ("url", "key", "deployment-id", "api-version")`). Defaultable params are positional until one is skipped; included-record fields are named. So renaming the required `apiKey` param doesn't break Integrator-generated code, but changing its position does. No test resource covers `ai.aws.bedrock`; Integrator generates no configurables automatically. | `AiUtils.java:174-175,720-732,1185-1215`; `SourceBuilder.java:811-900`; fixture `source/model_provider/connections.bal:10` |
+| B7 | Union-of-records `configurable` values are supported, but Config.toml has **no discriminator: the first union member that fits wins**. `a = {}` resolved to the first all-optional record (managed identity, not CLI). In code, the literal `{}` against the same union is a **compile error ("ambiguous type")**. With a required singleton field (`type = "azureCli"`) both resolve unambiguously. `aws.auth` has no discriminator, and its `ProfileAuthConfig` (all fields defaulted) matches `{}`. | [`unioncfg/`](entra-auth-experiments/unioncfg/); runtime `TomlProvider.java:634-656`, `TypeConverter.java:372-412` (ballerina-lang `ef5de61`) |
+| B8 | Bedrock labels the param `@display {label: "Authentication"}`, but neither `BearerToken` nor the `aws.auth` records have `@display` on their fields (Integrator shows title-cased field names). Its README shows only Ballerina literals, with no Config.toml example. | bedrock `provider_runtime_amazon.bal:48`, `types.bal:25-34`, `README.md:90-105`; `aws` 1.1.0 `aws.auth/types.bal` |
 
 ### 3.8 Open questions
 
@@ -304,8 +308,39 @@ can move back to the generated clients with no API change.
 
 ### 4.5 Axis S — how users pass auth to `ai.azure`
 
-_To be completed with the WSO2 Integrator findings (how it renders union-typed auth parameters and whether it
-generates named arguments)._
+All options widen the existing second parameter, which today is `string apiKey` (or the misnamed
+`string accessToken` on `EmbeddingProvider`). The value can be an API key (unchanged), a **plain-data credential
+config** (Config.toml / Integrator, FR7) or a **credential object** (pro-code, shared, custom).
+
+| | S1: widen type, **keep the name** | S2: widen type, **rename to `auth`** | S3: keep `string apiKey`, add `auth` to `ConnectionConfig` |
+|---|---|---|---|
+| Signature | `string\|identity:CredentialConfig\|identity:TokenCredential apiKey` | same type, named `auth` | `string apiKey, …, *ConnectionConfig` with `auth?` |
+| Positional callers / Integrator code (B6) | ✓ unchanged | ✓ unchanged | ✓ unchanged |
+| Named-arg callers (`apiKey = k`) | ✓ unchanged | ✗ **compile error**, so strictly a major version | ✓ unchanged |
+| Reads well | ~ the name says "key"; the `@display` label (what Integrator shows) and the docs say "Authentication" | ✓ | ✗ `new (url, "", dep, auth = {...})` needs a dummy key |
+| Integrator form (B5) | one "Authentication" field: text (key) / record with Type dropdown (configs) / expression (objects) | same | key field plus a separate advanced auth field: two ways to authenticate |
+
+**Recommend S1 now, S2 at the next major.**
+
+- **S1 is non-breaking (NF10).** Integrator only ever shows the label, so it can say "Authentication".
+- **Rename later.** Rename to `auth` in the next planned major of `ai.azure`, and track it in the rollout (§8).
+- **Why not S3.** It creates two competing auth inputs.
+
+**The plain-data config needs a discriminator (B7).** Each credential record carries a required singleton
+`type` field, for example `{type = "managedIdentity"}`, for three reasons:
+
+- **Unambiguous in Config.toml.** Without it, `{}` silently means "the first record that fits".
+- **Unambiguous in code.** `{}` doesn't compile against a union without one.
+- **Additive members don't change resolution.** New union members (certificate, §4.6) can't change how existing TOML
+  resolves. With first-match-wins, they could.
+
+For the same reason the union uses **no bare string constants** (unlike `aws:DEFAULT_CREDENTIALS`). In a
+`string|…` parameter a constant such as `"DEFAULT_CREDENTIAL"` is also a valid `string`, so it would be ambiguous
+with an API key. The default chain is therefore `{type = "default"}`.
+
+This is a deliberate difference from `aws.auth`, worth pointing out to reviewers. `aws.auth` gets away without a
+discriminator because its union has no `string` member and few all-optional records, but its
+`ProfileAuthConfig` already matches `{}`.
 
 ### 4.6 Reserving room for certificates (FR4)
 
@@ -314,14 +349,17 @@ Certificate support is added in phase 2 without breaking phase-1 code, by making
 ```ballerina
 // azure.identity, phase 1
 public type ClientSecretConfig record {|
+    "clientSecret" 'type;              // discriminator (§4.5): required, so Config.toml/literals are unambiguous
     string tenantId;
     string clientId;
     string clientSecret;
     string authorityHost = AZURE_PUBLIC_CLOUD;
 |};
 
-// phase 2 adds a new record and a new union member: existing values still type-check
+// phase 2 adds a new record and a new union member: existing values still type-check and still resolve to the
+// same member, because the discriminator (not field shape) selects it
 public type ClientCertificateConfig record {|
+    "clientCertificate" 'type;
     string tenantId;
     string clientId;
     string certificatePath;            // PEM with private key, or PKCS#12
@@ -330,14 +368,16 @@ public type ClientCertificateConfig record {|
     string authorityHost = AZURE_PUBLIC_CLOUD;
 |};
 
-public type CredentialConfig ManagedIdentityConfig|WorkloadIdentityConfig|ClientSecretConfig
-        |AzureCliConfig|DEFAULT_CREDENTIAL /* phase 2: |ClientCertificateConfig */;
+public type CredentialConfig DefaultCredentialConfig|ManagedIdentityConfig|WorkloadIdentityConfig
+        |ClientSecretConfig|AzureCliConfig /* phase 2: |ClientCertificateConfig */;
 ```
 
 Rules that keep it non-breaking:
 
 1. **Unions are inputs only.** Adding a member to a union that users *construct* never breaks them. Only code
    that exhaustively `match`es on it would break, and that code lives inside `azure.identity`.
+   Because every member has a distinct `type`, a new member can't capture Config.toml values meant for an
+   existing one (B7).
 2. **Records are closed, and new fields always get defaults.** That is how `sendCertificateChain` can arrive later.
 3. **The object type is the stable contract.** `ai.azure` depends only on `TokenCredential` (one `getToken`
    method), so a new `ClientCertificateCredential` class is purely additive.
@@ -369,7 +409,7 @@ table of URLs.
 | L: where | **L3**: new package `ballerinax/azure.identity` (L2 acceptable) |
 | I: how tokens are acquired | **I1**: pure Ballerina; revisit I2 only if the scope grows to broker/interactive/CAE |
 | T: how they are attached | **T2a**: per-call header on raw clients; propose T1 to the http team separately |
-| S: API shape | see §4.5 |
+| S: API shape | **S1**: widen the second parameter's type, keep its name (rename at the next major); credential configs carry a `type` discriminator |
 | Certificates | phase 2, with the slots reserved as in §4.6 |
 | Scope | derived from the URL, overridable (§4.7) |
 

@@ -1,0 +1,10 @@
+TOML a1 {}                  -> MiA
+TOML a2 {clientId}          -> MiA
+TOML a3 {tenantId}          -> CliA
+TOML a4 "DEFAULT_CREDENTIAL" -> DEFAULT
+TOML b1 {type=azureCli}     -> CliB
+TOML b2 {type=managedIdentity, clientId} -> MiB
+code literal {tenantId: "t"} -> CliA
+
+# Adding `AuthA empty = {};` to main.bal fails to compile:
+# ERROR [main.bal] ambiguous type 'exp/unioncfg:0.1.0:AuthA'
