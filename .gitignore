@@ -11,3 +11,8 @@ hr_agent/target/
 
 # Local Claude Code instructions
 CLAUDE.md
+
+# azd environments (hold the values azure.yaml references; never commit)
+.azure/
+# azd agents extension debug logs
+azd-ai-agents-*.log
