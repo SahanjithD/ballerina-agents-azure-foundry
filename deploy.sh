@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Builds the HR agent image, pushes it to ACR and creates a new Foundry hosted-agent version.
-# Usage: ./deploy.sh <tag>      e.g. ./deploy.sh v1
+# Usage: ./deploy.sh <tag> [--skip-push]      e.g. ./deploy.sh v1
+#   --skip-push: skip steps 2 and 3 and create the version from <tag>, which must already be in ACR
+#                (pushed separately, after `az acr login`).
 # Reads AZURE_OPENAI_ENDPOINT and MODEL_DEPLOYMENT_NAME from .env. AZURE_OPENAI_KEY stays local: in Foundry the
 # agent calls the model with its own Entra identity, which needs Foundry User on the Foundry resource.
 #
@@ -23,6 +25,12 @@ set -euo pipefail
 # always pulls the exact image we just built. "latest" is not allowed.
 TAG="${1:?usage: ./deploy.sh <tag>, e.g. v1 (unique per deploy, never latest)}"
 [[ "$TAG" == "latest" ]] && { echo "Refusing to use the 'latest' tag" >&2; exit 1; }
+SKIP_PUSH=false
+case "${2:-}" in
+    "") ;;
+    --skip-push) SKIP_PUSH=true ;;
+    *) echo "Unknown option: $2" >&2; exit 1 ;;
+esac
 
 # Names of our Azure resources.
 RG=rg-foundry-dasuns          # resource group: everything lives here
@@ -54,6 +62,12 @@ done
 # ---------------------------------------------------------------------------------------------------------
 # Step 2: Compile the Ballerina code -> hr_agent/target/bin/hr_agent.jar
 # ---------------------------------------------------------------------------------------------------------
+if [[ "$SKIP_PUSH" == true ]]; then
+    # The image was built and pushed separately: only check that the tag is in ACR (needs `az acr login`).
+    docker manifest inspect "$IMAGE" >/dev/null 2>&1 \
+        || { echo "${IMAGE} not found in ACR (run az acr login -n ${ACR} first)" >&2; exit 1; }
+    echo "==> Using existing ${IMAGE}"
+else
 echo "==> Building jar"
 (cd "${ROOT}/hr_agent" && bal build --locking-mode=soft)
 
@@ -71,10 +85,11 @@ if docker manifest inspect "$IMAGE" >/dev/null 2>&1; then
     exit 1
 fi
 
-# Build the image from hr_agent/Dockerfile (it copies in the .jar from step 2) and push it.
+# Build the image from hr_agent/Dockerfile (a jar-only image: it copies in the .jar from step 2) and push it.
 # Foundry runs on Intel/AMD Linux, so we build for linux/amd64 even on an Apple Silicon Mac.
 echo "==> Building and pushing ${IMAGE}"
 docker buildx build --platform linux/amd64 -t "$IMAGE" --push "${ROOT}/hr_agent"
+fi
 
 # ---------------------------------------------------------------------------------------------------------
 # Step 4: Tell Foundry to run this image as the agent
