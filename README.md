@@ -44,6 +44,9 @@ AZURE_OPENAI_ENDPOINT=https://unused.invalid/openai/v1 AZURE_OPENAI_KEY=unused M
 
 For the full setup from scratch, see [docs/deploy-guide.md](docs/deploy-guide.md).
 
+With azd instead (one command per release, image built in ACR): [docs/azd-deploy-guide.md](docs/azd-deploy-guide.md).
+Why, and how it compares with `deploy.sh`: [docs/azd-deploy-evaluation.md](docs/azd-deploy-evaluation.md).
+
 ## Model authentication
 
 | Where | How | Needs |
