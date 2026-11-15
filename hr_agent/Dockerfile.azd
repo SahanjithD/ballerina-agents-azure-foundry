@@ -1,0 +1,35 @@
+# Image for azd container deploy (path B): azd uploads hr_agent/ and ACR Tasks builds this file remotely, so the
+# Ballerina JAR is compiled inside Docker (no local Ballerina or Docker needed). deploy.sh keeps using Dockerfile.
+#
+# No `FROM --platform=...` here: the ACR Tasks dependency scanner rejects any FROM flag ("unable to understand
+# line"). ACR builders are linux/amd64, which is what Foundry runs, so every stage runs natively there.
+# Build context: Dockerfile.azd.dockerignore (azd picks <Dockerfile>.dockerignore before .dockerignore).
+
+# 1. Ballerina JAR. Same distribution as Ballerina.toml. `bal build` only compiles (no tests), as in deploy.sh.
+# The image runs as `ballerina`, so root is needed to write target/ in this throwaway stage.
+FROM ballerina/ballerina:2201.14.0 AS jar
+USER root
+WORKDIR /src
+COPY Ballerina.toml Dependencies.toml ./
+COPY *.bal ./
+RUN bal build --locking-mode=soft
+
+# 2. Slim OpenTelemetry Collector (see otel/builder-config.yaml).
+FROM golang:1.26.2 AS otelcol
+RUN go install go.opentelemetry.io/collector/cmd/builder@v0.164.0
+COPY otel/builder-config.yaml /src/builder-config.yaml
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 builder --config=/src/builder-config.yaml
+
+# 3. Runtime: the same as Dockerfile. Ballerina 2201.14 compiles to Java 25 bytecode.
+FROM eclipse-temurin:25-jre
+
+WORKDIR /app
+COPY --from=otelcol /build/otelcol /app/otelcol
+COPY otel/collector.yaml /app/collector.yaml
+COPY otel/tracing.toml /app/tracing.toml
+COPY start.sh /app/start.sh
+COPY --from=jar /src/target/bin/hr_agent.jar /app/hr_agent.jar
+
+ENV BAL_CONFIG_FILES=/app/tracing.toml
+EXPOSE 8088
+ENTRYPOINT ["/app/start.sh"]

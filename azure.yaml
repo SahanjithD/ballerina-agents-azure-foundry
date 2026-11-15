@@ -1,0 +1,41 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+# Path B (repo root, since azd rejects service paths with ..): azd builds the image from hr_agent/Dockerfile.azd (the JAR is compiled inside Docker), pushes it to the
+# existing registry and creates the agent version. Per release: `azd deploy bal-demo-agent`.
+# Registry: AZURE_CONTAINER_REGISTRY_ENDPOINT / _RESOURCE_ID in the gitignored .azure/<env>/.env, so azd uses
+# acrdasunsdemo and never creates a registry. Values in ${...} come from the same file (`azd env set`).
+
+infra:
+    provider: microsoft.foundry
+name: bal-demo-agent
+services:
+    bal-demo-agent:
+        host: azure.ai.agent
+        kind: hosted
+        name: bal-demo-agent
+        description: Ballerina HR agent (built by azd)
+        project: hr_agent
+        language: docker
+        uses:
+            - ballerina-demo
+        docker:
+            path: Dockerfile.azd       # JAR built inside Docker; no FROM --platform (ACR Tasks rejects it)
+            context: .
+            remoteBuild: true          # build in ACR Tasks; false = local Docker build + push
+            image: bal-demo-agent      # repository in the registry (same one deploy.sh uses)
+            # tag: omitted, so azd uses a unique azd-deploy-<unix time> tag (never latest)
+        protocols:
+            - protocol: invocations
+              version: 2.0.0
+        container:
+            resources:
+                cpu: "1"
+                memory: 2Gi
+        sessionConfiguration:
+            idleTimeoutSeconds: 300
+        env:
+            AZURE_OPENAI_ENDPOINT: ${HR_AGENT_MODEL_ENDPOINT}
+            MODEL_DEPLOYMENT_NAME: ${HR_AGENT_MODEL_DEPLOYMENT}
+    # The existing project: azd connects to it and never provisions one.
+    ballerina-demo:
+        host: azure.ai.project
+        endpoint: https://foundry-dasuns-demo.services.ai.azure.com/api/projects/ballerina-demo

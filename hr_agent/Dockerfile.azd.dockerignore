@@ -1,0 +1,9 @@
+# Build context for Dockerfile.azd (azd remote build). Allow-list: sources only, so target/ (a ~100 MB JAR),
+# Config.toml and anything else local are never uploaded. azd does not add the Dockerfile itself, so list it.
+*
+!Dockerfile.azd
+!Ballerina.toml
+!Dependencies.toml
+!*.bal
+!otel/
+!start.sh
