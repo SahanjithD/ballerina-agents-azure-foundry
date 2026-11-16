@@ -1,5 +1,3 @@
-import ballerina/http;
-
 type LeaveType "annual"|"sick"|"casual";
 
 type Employee record {|
@@ -46,9 +44,6 @@ type InvocationRequest record {
     string message;
     # Optional ID of the employee asking, so the agent doesn't need to ask for it
     string employeeId?;
-    # Optional conversation ID for local testing. Ignored in Foundry, where the platform session ID is used;
-    # to continue a conversation there, send the same `agent_session_id` query parameter on every call
-    string sessionId?;
 };
 
 type InvocationResponse record {|
@@ -56,8 +51,3 @@ type InvocationResponse record {|
     string sessionId;
 |};
 
-// 200 OK instead of the default 201 Created for POST resources.
-type InvocationOk record {|
-    *http:Ok;
-    InvocationResponse body;
-|};

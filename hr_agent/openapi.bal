@@ -3,7 +3,7 @@ final readonly & json invocationsOpenApi = {
     openapi: "3.0.3",
     info: {
         title: "HR agent invocations",
-        version: HOST_VERSION,
+        version: "0.1.0",
         description: "Foundry hosted-agent Invocations endpoint for the Ballerina HR assistant."
     },
     paths: {
@@ -15,7 +15,7 @@ final readonly & json invocationsOpenApi = {
                         name: "agent_session_id",
                         "in": "query",
                         required: false,
-                        description: "Session to continue. Must match the sandbox's session ID when running in Foundry.",
+                        description: "Session to continue: send the same value on every call of a conversation.",
                         schema: {'type: "string"}
                     }
                 ],
@@ -60,8 +60,7 @@ final readonly & json invocationsOpenApi = {
                 required: ["message"],
                 properties: {
                     message: {'type: "string", description: "The question for the HR assistant"},
-                    employeeId: {'type: "string", description: "ID of the employee asking, e.g. E1001"},
-                    sessionId: {'type: "string", description: "Conversation ID for local testing; ignored in Foundry"}
+                    employeeId: {'type: "string", description: "ID of the employee asking, e.g. E1001"}
                 }
             },
             InputRequest: {

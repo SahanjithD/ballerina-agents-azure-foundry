@@ -2,56 +2,62 @@ import ballerina/ai;
 import ballerina/http;
 import ballerina/log;
 import ballerina/os;
+import ballerinax/ai.azure;
 
-// Foundry hosted-agent contract: plain HTTP on 8088, GET /readiness and POST /invocations.
+// Foundry hosted agent on ai.azure's FoundryListener. The listener serves the container contract (plain HTTP on
+// the PORT environment variable, else 8088), resolves the session and invocation IDs, and sets the platform
+// response headers (x-platform-server, x-request-id, x-agent-session-id, x-agent-invocation-id). This service
+// only holds the HR agent logic.
 //
-// Conversation continuity: Foundry picks the sandbox for each call from the `agent_session_id`
-// query parameter on the Foundry endpoint, before the request reaches this container. Callers must
-// send the same `agent_session_id` on every call of a conversation. Without it, Foundry creates a new
-// session, and the agent starts with an empty memory no matter which ID this code picks.
-service http:InterceptableService / on new http:Listener(8088) {
+// Conversation continuity: Foundry picks the sandbox for each call from the `agent_session_id` query parameter
+// on the Foundry endpoint. Callers send the same `agent_session_id` on every call of a conversation; the
+// listener passes it in `ctx.sessionId`, which is the agent's memory key.
+listener azure:FoundryListener foundryListener = new (openApiSpec = <map<json>>invocationsOpenApi);
 
-    public function createInterceptors() returns [RequestIdInterceptor, PlatformHeadersInterceptor,
-            PlatformErrorInterceptor] => [new, new, new];
+service azure:FoundryInvocationService on foundryListener {
 
-    resource function get readiness() returns http:Ok => {body: {status: "ready"}};
+    // Readiness probe: cheap, never calls the model. `()` is 200 {"status":"healthy"}.
+    resource function get readiness() {
+    }
 
-    resource function get invocations/docs/openapi\.json() returns json => invocationsOpenApi;
-
-    resource function post invocations(http:Request req, http:Headers headers, string? agent_session_id)
-            returns InvocationOk|http:BadRequest|http:InternalServerError {
-        InvocationRequest|InvalidRequestError request = parseInvocation(req);
+    // The declared `string` payload makes the listener hand over the raw body, so JSON and plain text both work.
+    resource function post invocations(@http:Payload string body, azure:FoundryContext ctx)
+            returns InvocationResponse|http:BadRequest|http:InternalServerError {
+        InvocationRequest|InvalidRequestError request = parseInvocation(body);
         if request is InvalidRequestError {
             return errorResponse(request);
         }
-        string|SessionMismatchError sessionId = resolveSessionId(os:getEnv("FOUNDRY_AGENT_SESSION_ID"),
-                agent_session_id, request?.sessionId);
-        if sessionId is SessionMismatchError {
-            log:printWarn("Rejected invocation with a mismatched session ID", sessionId);
-            return errorResponse(sessionId);
-        }
-        logSessionContext(sessionId, agent_session_id, headers);
+        logSessionContext(ctx);
 
         string? employeeId = request?.employeeId;
         string query = employeeId is string
             ? string `[Employee ID: ${employeeId}] ${request.message}`
             : request.message;
 
-        string|ai:Error answer = hrAgent.run(query, sessionId);
+        string|ai:Error answer = hrAgent.run(query, ctx.sessionId);
         if answer is ai:Error {
-            log:printError("Agent run failed", answer, sessionId = sessionId, errorSource = errorSource(answer));
+            log:printError("Agent run failed", answer, sessionId = ctx.sessionId, errorSource = errorSource(answer));
             return errorResponse(answer);
         }
-        return <InvocationOk>{headers: {[SESSION_ID_HEADER]: sessionId}, body: {response: answer, sessionId}};
+        return {response: answer, sessionId: ctx.sessionId};
     }
 }
 
-// Accepts `{"message": ...}`, `{"input": ...}` (what the Foundry playground sends) or a plain-text body.
-isolated function parseInvocation(http:Request req) returns InvocationRequest|InvalidRequestError {
-    string|error text = req.getTextPayload();
-    if text is error {
-        return error InvalidRequestError("Request body could not be read: " + text.message(), text);
-    }
+# The request body couldn't be read as an invocation.
+type InvalidRequestError distinct error;
+
+# Who caused a failed request: the caller (`user`), a dependency such as the model (`upstream`), or this
+# service itself (`platform`). Sent as `x-platform-error-source`; the listener keeps a value the service sets.
+enum ErrorSource {
+    USER = "user",
+    UPSTREAM = "upstream",
+    PLATFORM = "platform"
+}
+
+const ERROR_SOURCE_HEADER = "x-platform-error-source";
+
+// Accepts `{"message": ...}`, `{"input": ...}` (what the Foundry playground sends), a JSON string or plain text.
+isolated function parseInvocation(string text) returns InvocationRequest|InvalidRequestError {
     string body = text.trim();
     json|error payload = body.fromJsonString();
     if payload is string {
@@ -66,10 +72,6 @@ isolated function parseInvocation(http:Request req) returns InvocationRequest|In
         if employeeId is string {
             request.employeeId = employeeId;
         }
-        json sessionId = payload["sessionId"];
-        if sessionId is string {
-            request.sessionId = sessionId;
-        }
         return request;
     } else if payload is json {
         return error InvalidRequestError("Request must be a JSON object, a JSON string or plain text");
@@ -80,43 +82,40 @@ isolated function parseInvocation(http:Request req) returns InvocationRequest|In
     return {message: body};
 }
 
-// Picks the key for the agent's conversation memory.
-// In Foundry each sandbox serves exactly one session, so the platform's session ID comes first, and a
-// different `agent_session_id` is rejected, as Microsoft's Agent Framework host does. Outside Foundry the
-// query parameter, then the request-body `sessionId` (local testing only), then "default" are used.
-isolated function resolveSessionId(string platformSessionId, string? querySessionId, string? bodySessionId)
-        returns string|SessionMismatchError {
-    if platformSessionId != "" {
-        if querySessionId is string && querySessionId != "" && querySessionId != platformSessionId {
-            return error SessionMismatchError("agent_session_id doesn't match this sandbox's session",
-                    platformSessionId = platformSessionId, querySessionId = querySessionId);
+isolated function errorSource(error err) returns ErrorSource {
+    if err is InvalidRequestError {
+        return USER;
+    }
+    // Agent.run wraps model failures in a plain ai:Error, with the ai:LlmError as its cause.
+    error? current = err;
+    while current is error {
+        if current is ai:LlmError {
+            return UPSTREAM;
         }
-        return platformSessionId;
+        current = current.cause();
     }
-    if querySessionId is string && querySessionId != "" {
-        return querySessionId;
-    }
-    if bodySessionId is string && bodySessionId != "" {
-        return bodySessionId;
-    }
-    return "default";
+    return PLATFORM;
 }
 
-// Logs which session identifiers reach the container, to check what Foundry actually forwards, and
-// whether W3C trace context arrives so container spans can join the platform's invoke_agent trace.
-// Logs header names only, not values, because some platform headers identify the caller.
-isolated function logSessionContext(string sessionId, string? querySessionId, http:Headers headers) {
-    string[] agentHeaders = from string name in headers.getHeaderNames()
-        where name.toLowerAscii().startsWith("x-agent")
-        select name;
-    log:printInfo("Invocation received", sessionId = sessionId,
-            platformSessionId = os:getEnv("FOUNDRY_AGENT_SESSION_ID"),
-            querySessionId = querySessionId ?: "", agentHeaders = agentHeaders,
-            traceparent = headers.hasHeader("traceparent"), tracestate = headers.hasHeader("tracestate"));
+isolated function errorResponse(error err) returns http:BadRequest|http:InternalServerError {
+    ErrorSource errSource = errorSource(err);
+    map<string> headers = {[ERROR_SOURCE_HEADER]: errSource};
+    if errSource == USER {
+        return <http:BadRequest>{headers, body: {message: err.message()}};
+    }
+    return <http:InternalServerError>{headers, body: {message: "The HR assistant could not process the request"}};
 }
 
-// Logs environment variable names (never values) at startup, to see what the Foundry sandbox provides,
-// e.g. managed-identity variables for keyless model access.
+// Logs which session identifiers and platform headers reach the container (names and flags only, never values
+// that identify the caller).
+isolated function logSessionContext(azure:FoundryContext ctx) {
+    log:printInfo("Invocation received", sessionId = ctx.sessionId, invocationId = ctx.invocationId,
+            platformSessionId = ctx.agent.sessionId ?: "", agentVersion = ctx.agent.version ?: "",
+            hasUserId = ctx.userId is string, hasCallId = ctx.callId is string,
+            traceparent = ctx.trace.traceparent is string);
+}
+
+// Logs environment variable names (never values) at startup, to see what the Foundry sandbox provides.
 final string[] envNames = logEnvNames();
 
 function logEnvNames() returns string[] {
