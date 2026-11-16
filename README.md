@@ -1,15 +1,16 @@
 # Ballerina HR agent on Microsoft Foundry
 
 A Ballerina `ai:Agent` (an HR assistant with six tools over mock data) packaged as a Microsoft Foundry
-**hosted agent** using the Invocations protocol. Ballerina has no official hosted-agent SDK, so the
-container implements the host contract itself, following Microsoft's `azure-ai-agentserver` host.
+**hosted agent** using the Invocations protocol. The host contract (port, readiness, session and invocation IDs,
+platform headers) comes from `azure:FoundryListener` in `ballerinax/ai.azure` 1.6.x, which follows Microsoft's
+`azure-ai-agentserver` host. Until that version is on Ballerina Central, build ai.azure's `main` and publish it to
+the local repository (`./gradlew build -x test -PpublishToLocalCentral=true`); `Ballerina.toml` expects 1.6.3.
 
 ## Layout
 
 | Path | What it is |
 | --- | --- |
-| `hr_agent/main.bal` | HTTP service on port 8088: `/readiness`, `/invocations`, the OpenAPI route, session handling |
-| `hr_agent/host.bal` | Host behaviour shared by all routes: platform headers, request IDs, error sources |
+| `hr_agent/main.bal` | `azure:FoundryInvocationService` on an `azure:FoundryListener`: `/readiness`, `/invocations`, request parsing, error sources |
 | `hr_agent/agent.bal` | Model provider and the `ai:Agent` |
 | `hr_agent/tools.bal`, `data.bal`, `types.bal` | HR tools, mock data and types |
 | `hr_agent/openapi.bal` | OpenAPI document for the invocation JSON |
@@ -95,23 +96,16 @@ Foundry runs each session in its own sandbox and routes calls by the `agent_sess
 To continue a conversation, send the same `agent_session_id` on every call. Foundry issues the IDs: make the
 first call without one, then reuse the `x-agent-session-id` response header.
 
-Inside the container, the conversation memory is keyed like this:
-
-1. `FOUNDRY_AGENT_SESSION_ID`, set by Foundry in the sandbox. If `agent_session_id` is also sent and
-   differs from it, the call is **rejected with 400** (`x-platform-error-source: user`), as Microsoft's Agent
-   Framework host does.
-2. The `agent_session_id` query parameter, when running outside Foundry.
-3. The body's `sessionId`, for local testing only.
-4. `default`.
+Inside the container, the conversation memory is keyed by the listener's session ID (`ctx.sessionId`): the
+`agent_session_id` query parameter, else `FOUNDRY_AGENT_SESSION_ID`, else a generated UUID. Locally, send
+`?agent_session_id=<id>` to continue a conversation.
 
 ## Response headers
 
 | Header | When | Value |
 | --- | --- | --- |
-| `x-platform-server` | every response | `bal-foundry-host/<version> (ballerina/<distribution>)`, from `Ballerina.toml` |
-| `x-request-id` | every response | the incoming `x-request-id` if sent, otherwise the trace ID from `traceparent`, otherwise a new UUID. In Foundry the gateway doesn't forward the caller's `x-request-id`. It adds its own (the trace ID) in front of the container's, so callers see `<gateway id>,<container id>` |
-| `x-agent-session-id` | successful `/invocations` | the session ID used for the conversation memory |
-| `x-platform-error-source` | every 4xx and 5xx | `user` (bad request, session mismatch, unknown route), `upstream` (the model call failed: an `ai:LlmError` in the error chain), `platform` (any other failure in this service) |
-
-`x-platform-server` uses constants in `host.bal`. A test fails if they drift from the `version` and
-`distribution` in `Ballerina.toml`.
+| `x-platform-server` | every response | `ballerinax-ai.azure/<package version> (ballerina/<runtime version>)`, set by the listener |
+| `x-request-id` | every response | set by the listener: the incoming `x-request-id` if sent, otherwise a trace or generated ID. In Foundry the gateway doesn't forward the caller's `x-request-id`. It adds its own (the trace ID) in front of the container's, so callers see `<gateway id>,<container id>` |
+| `x-agent-session-id` | `/invocations` | the session ID used for the conversation memory |
+| `x-agent-invocation-id` | `/invocations` | the invocation ID, set by the listener |
+| `x-platform-error-source` | every 4xx and 5xx | `user` (bad request), `upstream` (the model call failed: an `ai:LlmError` in the error chain), `platform` (any other failure in this service) |

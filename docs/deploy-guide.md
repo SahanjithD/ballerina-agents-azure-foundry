@@ -26,19 +26,22 @@ Your Ballerina service must:
 - answer `GET /readiness` with `200`
 - handle `POST /invocations` (your own JSON in and out)
 
-```ballerina
-service / on new http:Listener(8088) {
-    resource function get readiness() returns http:Ok => {body: {status: "ready"}};
+Easiest: use `azure:FoundryListener` from `ballerinax/ai.azure` 1.6.x. It serves port 8088, readiness, the session
+and invocation IDs and the platform headers, so the service holds only agent logic:
 
-    resource function post invocations(@http:Payload json body, string? agent_session_id)
-            returns json|error {
-        // call your ai:Agent here, and key the conversation memory by the session ID
+```ballerina
+listener azure:FoundryListener foundryListener = new; // the PORT environment variable, else 8088
+
+service azure:FoundryInvocationService on foundryListener {
+    resource function get readiness() {} // 200 {"status":"healthy"}
+
+    resource function post invocations(@http:Payload json body, azure:FoundryContext ctx) returns json|error {
+        // call your ai:Agent here, and key the conversation memory by ctx.sessionId
     }
 }
 ```
 
 - Read the model settings from env vars (`AZURE_OPENAI_ENDPOINT`, `MODEL_DEPLOYMENT_NAME`).
-- Use `FOUNDRY_AGENT_SESSION_ID` (set by Foundry) as the session key.
 - Keep anything that must survive idle in `$HOME`. Memory is lost when the session's sandbox goes idle.
 - In Foundry, call the model with the agent's Entra identity, not an API key. See `hr_agent/identity.bal`.
 
